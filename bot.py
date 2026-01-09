@@ -2,9 +2,22 @@ import asyncio
 import time
 import os
 import psycopg2
+import threading
+from flask import Flask
 from psycopg2.extras import DictCursor
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+
+# --- FAKE WEBSITE (To keep Render alive) ---
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is alive!"
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
 
 # --- Configuration ---
 TOKEN = os.getenv("BOT_TOKEN")
@@ -15,16 +28,25 @@ user_last_post = {}
 FLOOD_DELAY = 5
 
 # --- Connect to Database ---
-try:
-    conn = psycopg2.connect(DB_URL, cursor_factory=DictCursor)
-    conn.autocommit = True
-    print("✅ Connected to Database")
-except Exception as e:
-    print(f"❌ Database connection failed: {e}")
+conn = None
+def get_db_connection():
+    global conn
+    try:
+        # Check if connection is dead or not created
+        if conn is None or conn.closed != 0:
+            print("🔄 Connecting to Database...")
+            conn = psycopg2.connect(DB_URL, cursor_factory=DictCursor)
+            conn.autocommit = True
+            print("✅ Database Connected")
+    except Exception as e:
+        print(f"❌ Database connection failed: {e}")
+    return conn
 
 # --- Helper functions ---
 def get_next_anon_id(group_id):
-    with conn.cursor() as cur:
+    c = get_db_connection()
+    if not c: return "ERR"
+    with c.cursor() as cur:
         cur.execute("SELECT counter FROM anon_counters WHERE group_id=%s", (group_id,))
         row = cur.fetchone()
         if row:
@@ -36,14 +58,18 @@ def get_next_anon_id(group_id):
         return f"A{counter}"
 
 def store_anon_message(group_id, anon_id, user_id, text):
-    with conn.cursor() as cur:
+    c = get_db_connection()
+    if not c: return
+    with c.cursor() as cur:
         cur.execute(
             "INSERT INTO anon_messages (group_id, anon_id, user_id, message_text) VALUES (%s,%s,%s,%s)",
             (group_id, anon_id, user_id, text)
         )
 
 def trace_anon(group_id, anon_id):
-    with conn.cursor() as cur:
+    c = get_db_connection()
+    if not c: return None
+    with c.cursor() as cur:
         cur.execute("SELECT user_id FROM anon_messages WHERE group_id=%s AND anon_id=%s", (group_id, anon_id))
         row = cur.fetchone()
         return row['user_id'] if row else None
@@ -99,9 +125,12 @@ async def trace(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Not found.")
 
 if __name__ == "__main__":
+    # Start the fake website in the background
+    threading.Thread(target=run_web_server, daemon=True).start()
+    
+    # Start the bot
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("anon", anon))
     app.add_handler(CommandHandler("trace", trace))
     app.run_polling()
-                
