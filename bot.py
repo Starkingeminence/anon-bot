@@ -29,18 +29,22 @@ FLOOD_DELAY = 5
 
 # --- Connect to Database ---
 conn = None
+# --- Modified Connection Function (Debug Mode) ---
 def get_db_connection():
     global conn
     try:
         # Check if connection is dead or not created
         if conn is None or conn.closed != 0:
             print("🔄 Connecting to Database...")
-            conn = psycopg2.connect(DB_URL, cursor_factory=DictCursor)
+            # FORCE SSL MODE directly in the code just in case
+            conn = psycopg2.connect(DB_URL, cursor_factory=DictCursor, sslmode='require')
             conn.autocommit = True
             print("✅ Database Connected")
     except Exception as e:
         print(f"❌ Database connection failed: {e}")
+        return f"ERROR: {e}" # <--- Return the actual error text!
     return conn
+
 
 # --- Helper functions ---
 def get_next_anon_id(group_id):
