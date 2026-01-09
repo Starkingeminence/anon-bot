@@ -7,7 +7,7 @@ from psycopg2.extras import DictCursor
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# --- FAKE WEBSITE (To keep Render alive) ---
+# --- FAKE WEBSITE ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -22,16 +22,13 @@ def run_web_server():
 TOKEN = os.getenv("BOT_TOKEN")
 DB_URL = os.getenv("DATABASE_URL")
 
-# --- Connect to Database ---
+# --- Database Connection ---
 conn = None
-
 def get_db_connection():
     global conn
     try:
-        # Check if connection is dead or not created
         if conn is None or conn.closed != 0:
             print("🔄 Connecting to Database...")
-            # FORCE SSL MODE directly here to fix handshake errors
             conn = psycopg2.connect(DB_URL, cursor_factory=DictCursor, sslmode='require')
             conn.autocommit = True
             print("✅ Database Connected")
@@ -43,11 +40,8 @@ def get_db_connection():
 # --- Helper functions ---
 def get_next_anon_id(group_id):
     c = get_db_connection()
-    
-    if isinstance(c, str): 
-        return c 
-    if not c: 
-        return "ERR_NO_CONN"
+    if isinstance(c, str): return c 
+    if not c: return "ERR_NO_CONN"
         
     with c.cursor() as cur:
         cur.execute("CREATE TABLE IF NOT EXISTS anon_counters (group_id BIGINT PRIMARY KEY, counter INT DEFAULT 0);")
@@ -84,13 +78,12 @@ def store_anon_message(group_id, anon_id, user_id, text):
 def trace_anon(group_id, anon_id):
     c = get_db_connection()
     if not c or isinstance(c, str): return None
-    
     with c.cursor() as cur:
         cur.execute("SELECT user_id FROM anon_messages WHERE group_id=%s AND anon_id=%s", (group_id, anon_id))
         row = cur.fetchone()
         return row['user_id'] if row else None
 
-# --- Bot commands ---
+# --- Bot Commands ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Bot Online. Use /anon <message> to post.")
 
@@ -104,11 +97,55 @@ async def anon(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat.id
 
     try:
-        # Step 1: Get ID
+        # 1. Get ID
         anon_id = get_next_anon_id(chat_id)
-        
-        # If database failed, anon_id will hold the error message
         if "ERROR" in anon_id:
+            await update.message.reply_text(f"⚠️ DEBUG: {anon_id}")
+            return
+
+        # 2. Save
+        store_anon_message(chat_id, anon_id, user_id, message_text)
+        
+        # 3. Send
+        await context.bot.send_message(chat_id=chat_id, text=f"🕶 Anonymous #{anon_id}:\n{message_text}")
+
+        # 4. Delete (Simplified to avoid indentation errors)
+        try:
+            await update.message.delete()
+        except:
+            pass 
+            
+    except Exception as e:
+        print(f"Error: {e}")
+        await update.message.reply_text(f"⚠️ DEBUG ERROR: {e}")
+
+async def trace(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_admins = await update.effective_chat.get_administrators()
+    if update.message.from_user.id not in [a.user.id for a in chat_admins]:
+        await update.message.reply_text("❌ Admins only.")
+        return
+
+    if len(context.args) != 1:
+        await update.message.reply_text("Usage: /trace <anon_id>")
+        return
+
+    try:
+        anon_id = context.args[0]
+        result = trace_anon(update.message.chat.id, anon_id)
+        if result:
+            await update.message.reply_text(f"🕵️ #{anon_id} is User ID: {result}")
+        else:
+            await update.message.reply_text("❌ Not found.")
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ DEBUG ERROR: {e}")
+
+if __name__ == "__main__":
+    threading.Thread(target=run_web_server, daemon=True).start()
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("anon", anon))
+    app.add_handler(CommandHandler("trace", trace))
+    app.run_polling()
             await update.message.reply_text(f"⚠️ DEBUG: {anon_id}")
             return
 
