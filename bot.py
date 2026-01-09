@@ -47,19 +47,6 @@ def get_db_connection():
 
 
 # --- Helper functions ---
-def get_next_anon_id(group_id):
-    c = get_db_connection()
-    if not c: return "ERR"
-    with c.cursor() as cur:
-        cur.execute("SELECT counter FROM anon_counters WHERE group_id=%s", (group_id,))
-        row = cur.fetchone()
-        if row:
-            counter = row['counter'] + 1
-            cur.execute("UPDATE anon_counters SET counter=%s WHERE group_id=%s", (counter, group_id))
-        else:
-            counter = 1
-            cur.execute("INSERT INTO anon_counters (group_id, counter) VALUES (%s, %s)", (group_id, counter))
-        return f"A{counter}"
 
 def store_anon_message(group_id, anon_id, user_id, text):
     c = get_db_connection()
@@ -70,7 +57,26 @@ def store_anon_message(group_id, anon_id, user_id, text):
             (group_id, anon_id, user_id, text)
         )
 
-def trace_anon(group_id, anon_id):
+def trace_anodef get_next_anon_id(group_id):
+    c = get_db_connection()
+    # If 'c' is a string (Error message), return it directly
+    if isinstance(c, str): 
+        return c 
+    if not c: 
+        return "ERR"
+        
+    with c.cursor() as cur:
+        # ... (keep the rest of the existing code logic below unchanged) ...
+        cur.execute("SELECT counter FROM anon_counters WHERE group_id=%s", (group_id,))
+        row = cur.fetchone()
+        if row:
+            counter = row['counter'] + 1
+            cur.execute("UPDATE anon_counters SET counter=%s WHERE group_id=%s", (counter, group_id))
+        else:
+            counter = 1
+            cur.execute("INSERT INTO anon_counters (group_id, counter) VALUES (%s, %s)", (group_id, counter))
+        return f"A{counter}"
+n(group_id, anon_id):
     c = get_db_connection()
     if not c: return None
     with c.cursor() as cur:
