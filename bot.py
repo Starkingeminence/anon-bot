@@ -37,7 +37,6 @@ def get_db_connection():
             print("✅ Database Connected")
     except Exception as e:
         print(f"❌ Database connection failed: {e}")
-        # Return the specific error message as a string so we can see it
         return f"ERROR: {e}"
     return conn
 
@@ -45,16 +44,13 @@ def get_db_connection():
 def get_next_anon_id(group_id):
     c = get_db_connection()
     
-    # If connection failed, return the error message
     if isinstance(c, str): 
         return c 
     if not c: 
         return "ERR_NO_CONN"
         
     with c.cursor() as cur:
-        # Check if table exists first
         cur.execute("CREATE TABLE IF NOT EXISTS anon_counters (group_id BIGINT PRIMARY KEY, counter INT DEFAULT 0);")
-        
         cur.execute("SELECT counter FROM anon_counters WHERE group_id=%s", (group_id,))
         row = cur.fetchone()
         if row:
@@ -70,7 +66,6 @@ def store_anon_message(group_id, anon_id, user_id, text):
     if not c or isinstance(c, str): return
     
     with c.cursor() as cur:
-        # Check if table exists first
         cur.execute("""
             CREATE TABLE IF NOT EXISTS anon_messages (
                 id SERIAL PRIMARY KEY,
@@ -109,6 +104,25 @@ async def anon(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat.id
 
     try:
+        # Step 1: Get ID
+        anon_id = get_next_anon_id(chat_id)
+        
+        # If database failed, anon_id will hold the error message
+        if "ERROR" in anon_id:
+            await update.message.reply_text(f"⚠️ DEBUG: {anon_id}")
+            return
+
+        # Step 2: Save Message
+        store_anon_message(chat_id, anon_id, user_id, message_text)
+        
+        # Step 3: Post Anon Message FIRST (so we know it worked)
+        await context.bot.send_message(chat_id=chat_id, text=f"🕶 Anonymous #{anon_id}:\n{message_text}")
+
+        # Step 4: Delete User Message (Safely)
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
         # Step 1: Get ID
         anon_id = get_next_anon_id(chat_id)
         
