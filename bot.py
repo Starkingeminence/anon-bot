@@ -1,4 +1,3 @@
-import asyncio
 import time
 import os
 import psycopg2
@@ -23,50 +22,39 @@ def run_web_server():
 TOKEN = os.getenv("BOT_TOKEN")
 DB_URL = os.getenv("DATABASE_URL")
 
-# --- Flood control ---
-user_last_post = {}
-FLOOD_DELAY = 5
-
 # --- Connect to Database ---
 conn = None
-# --- Modified Connection Function (Debug Mode) ---
+
 def get_db_connection():
     global conn
     try:
         # Check if connection is dead or not created
         if conn is None or conn.closed != 0:
             print("🔄 Connecting to Database...")
-            # FORCE SSL MODE directly in the code just in case
+            # FORCE SSL MODE directly here to fix handshake errors
             conn = psycopg2.connect(DB_URL, cursor_factory=DictCursor, sslmode='require')
             conn.autocommit = True
             print("✅ Database Connected")
     except Exception as e:
         print(f"❌ Database connection failed: {e}")
-        return f"ERROR: {e}" # <--- Return the actual error text!
+        # Return the specific error message as a string so we can see it
+        return f"ERROR: {e}"
     return conn
 
-
 # --- Helper functions ---
-
-def store_anon_message(group_id, anon_id, user_id, text):
+def get_next_anon_id(group_id):
     c = get_db_connection()
-    if not c: return
-    with c.cursor() as cur:
-        cur.execute(
-            "INSERT INTO anon_messages (group_id, anon_id, user_id, message_text) VALUES (%s,%s,%s,%s)",
-            (group_id, anon_id, user_id, text)
-        )
-
-def trace_anodef get_next_anon_id(group_id):
-    c = get_db_connection()
-    # If 'c' is a string (Error message), return it directly
+    
+    # If connection failed, return the error message
     if isinstance(c, str): 
         return c 
     if not c: 
-        return "ERR"
+        return "ERR_NO_CONN"
         
     with c.cursor() as cur:
-        # ... (keep the rest of the existing code logic below unchanged) ...
+        # Check if table exists first
+        cur.execute("CREATE TABLE IF NOT EXISTS anon_counters (group_id BIGINT PRIMARY KEY, counter INT DEFAULT 0);")
+        
         cur.execute("SELECT counter FROM anon_counters WHERE group_id=%s", (group_id,))
         row = cur.fetchone()
         if row:
@@ -76,9 +64,32 @@ def trace_anodef get_next_anon_id(group_id):
             counter = 1
             cur.execute("INSERT INTO anon_counters (group_id, counter) VALUES (%s, %s)", (group_id, counter))
         return f"A{counter}"
-n(group_id, anon_id):
+
+def store_anon_message(group_id, anon_id, user_id, text):
     c = get_db_connection()
-    if not c: return None
+    if not c or isinstance(c, str): return
+    
+    with c.cursor() as cur:
+        # Check if table exists first
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS anon_messages (
+                id SERIAL PRIMARY KEY,
+                group_id BIGINT,
+                anon_id VARCHAR(50),
+                user_id BIGINT,
+                message_text TEXT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        cur.execute(
+            "INSERT INTO anon_messages (group_id, anon_id, user_id, message_text) VALUES (%s,%s,%s,%s)",
+            (group_id, anon_id, user_id, text)
+        )
+
+def trace_anon(group_id, anon_id):
+    c = get_db_connection()
+    if not c or isinstance(c, str): return None
+    
     with c.cursor() as cur:
         cur.execute("SELECT user_id FROM anon_messages WHERE group_id=%s AND anon_id=%s", (group_id, anon_id))
         row = cur.fetchone()
@@ -97,18 +108,59 @@ async def anon(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     chat_id = update.message.chat.id
 
-    # Flood Check
-    now = time.time()
-    if user_id in user_last_post and now - user_last_post[user_id] < FLOOD_DELAY:
-        await update.message.reply_text("⏱ Wait a few seconds.")
-        return
-    user_last_post[user_id] = now
-
     try:
+        # Step 1: Get ID
         anon_id = get_next_anon_id(chat_id)
+        
+        # If database failed, anon_id will hold the error message
+        if "ERROR" in anon_id:
+            await update.message.reply_text(f"⚠️ DEBUG: {anon_id}")
+            return
+
+        # Step 2: Save Message
         store_anon_message(chat_id, anon_id, user_id, message_text)
+        
+        # Step 3: Delete User Message
         try:
             await update.message.delete()
+        except:
+            pass 
+            
+        # Step 4: Post Anon Message
+        await context.bot.send_message(chat_id=chat_id, text=f"🕶 Anonymous #{anon_id}:\n{message_text}")
+        
+    except Exception as e:
+        print(f"Error: {e}")
+        await update.message.reply_text(f"⚠️ DEBUG ERROR: {e}")
+
+async def trace(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_admins = await update.effective_chat.get_administrators()
+    if update.message.from_user.id not in [a.user.id for a in chat_admins]:
+        await update.message.reply_text("❌ Admins only.")
+        return
+
+    if len(context.args) != 1:
+        await update.message.reply_text("Usage: /trace <anon_id>")
+        return
+
+    try:
+        anon_id = context.args[0]
+        chat_id = update.message.chat.id
+        user_id = trace_anon(chat_id, anon_id)
+        if user_id:
+            await update.message.reply_text(f"🕵️ #{anon_id} is User ID: {user_id}")
+        else:
+            await update.message.reply_text("❌ Not found.")
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ DEBUG ERROR: {e}")
+
+if __name__ == "__main__":
+    threading.Thread(target=run_web_server, daemon=True).start()
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("anon", anon))
+    app.add_handler(CommandHandler("trace", trace))
+    app.run_polling()
         except:
             pass
         await context.bot.send_message(chat_id=chat_id, text=f"🕶 Anonymous #{anon_id}:\n{message_text}")
