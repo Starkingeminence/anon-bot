@@ -1,18 +1,26 @@
 import asyncio
 import os
 import threading
-import psycopg2
+import asyncpg
 import re
 import io
+import logging
 from datetime import date, datetime, timedelta
 from flask import Flask
-from psycopg2.extras import DictCursor
 from telegram import Update, ChatPermissions
 from telegram.constants import ParseMode, ChatMemberStatus
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 from telegram.helpers import mention_html
 
-# --- FAKE WEBSITE (To Keep Render Awake) ---
+# --- Logging Setup ---
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO,
+    handlers=[logging.FileHandler("bot.log"), logging.StreamHandler()]
+)
+logger = logging.getLogger(__name__)
+
+# --- FAKE WEBSITE ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -29,8 +37,8 @@ DB_URL = os.getenv("DATABASE_URL")
 SUPPORT_USER = os.getenv("SUPPORT_USER", "admin")
 BOT_CREATOR_ID = int(os.getenv("BOT_CREATOR_ID", "0"))
 DAILY_POINT_CAP = 50
+DAILY_VIOLATION_CAP = 15
 
-# Settings that ONLY the Owner can propose (Admins can vote, but not start)
 OWNER_ONLY_CONFIGS = ['engagement_tracking']
 
 # --- Caching ---
@@ -38,78 +46,404 @@ group_settings_cache = {}
 user_sessions = {}
 admin_sessions = {}
 
-# --- Database Setup ---
-conn = None
-def get_db_connection():
-    global conn
+# --- Database Setup (Async with asyncpg) ---
+async def get_db_connection():
     try:
-        if conn is None or conn.closed != 0:
-            conn = psycopg2.connect(DB_URL, cursor_factory=DictCursor)
-            conn.autocommit = True
-            with conn.cursor() as cur:
-                # 1. Standard Tables
-                cur.execute("""CREATE TABLE IF NOT EXISTS group_settings (
-                    group_id BIGINT PRIMARY KEY,
-                    anti_link BOOLEAN DEFAULT FALSE,
-                    anti_forward BOOLEAN DEFAULT FALSE,
-                    engagement_tracking BOOLEAN DEFAULT TRUE);""")
-                cur.execute("""CREATE TABLE IF NOT EXISTS blacklists (
-                    group_id BIGINT, word TEXT, PRIMARY KEY (group_id, word));""")
-                cur.execute("""CREATE TABLE IF NOT EXISTS user_stats (
-                    group_id BIGINT, user_id BIGINT, username TEXT, 
-                    message_count INT DEFAULT 0, total_points INT DEFAULT 0, 
-                    points_today INT DEFAULT 0, last_active_date DATE DEFAULT CURRENT_DATE,
-                    warns INT DEFAULT 0, PRIMARY KEY (group_id, user_id));""")
-                cur.execute("""CREATE TABLE IF NOT EXISTS suggestions (
-                    id SERIAL PRIMARY KEY, group_id BIGINT, user_id BIGINT, 
-                    suggestion TEXT, status TEXT DEFAULT 'pending');""")
-                cur.execute("""CREATE TABLE IF NOT EXISTS punishment_logs (
-                    group_id BIGINT, target_id BIGINT, admin_id BIGINT,
-                    type TEXT, reason TEXT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (group_id, target_id, type));""")
-                cur.execute("""CREATE TABLE IF NOT EXISTS custom_filters (
-                    group_id BIGINT, trigger TEXT, response TEXT,
-                    PRIMARY KEY (group_id, trigger));""")
-                cur.execute("""CREATE TABLE IF NOT EXISTS message_logs (
-                    group_id BIGINT, message_id BIGINT, user_id BIGINT,
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (group_id, message_id));""")
-                
-                # 2. Governance Tables
-                cur.execute("""CREATE TABLE IF NOT EXISTS proposals (
-                    id SERIAL PRIMARY KEY, group_id BIGINT, proposer_id BIGINT,
-                    action_type TEXT, key_target TEXT, value_target TEXT,
-                    status TEXT DEFAULT 'pending', 
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    last_pinged_at TIMESTAMP
-                );""")
-                cur.execute("""CREATE TABLE IF NOT EXISTS votes (
-                    proposal_id INT, user_id BIGINT, vote TEXT,
-                    PRIMARY KEY (proposal_id, user_id));""")
+        conn = await asyncpg.connect(DB_URL)
+        # Initialize Tables (run once or on startup)
+        await conn.execute("""CREATE TABLE IF NOT EXISTS group_settings (
+            group_id BIGINT PRIMARY KEY,
+            anti_link BOOLEAN DEFAULT FALSE,
+            anti_forward BOOLEAN DEFAULT FALSE,
+            engagement_tracking BOOLEAN DEFAULT TRUE);""")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS blacklists (
+            group_id BIGINT, word TEXT, PRIMARY KEY (group_id, word));""")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS user_stats (
+            group_id BIGINT, user_id BIGINT, username TEXT, 
+            message_count INT DEFAULT 0, total_points INT DEFAULT 0, 
+            points_today INT DEFAULT 0, last_active_date DATE DEFAULT CURRENT_DATE,
+            warns INT DEFAULT 0, violations_today INT DEFAULT 0, last_anon_link_date DATE DEFAULT NULL, PRIMARY KEY (group_id, user_id));""")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS suggestions (
+            id SERIAL PRIMARY KEY, group_id BIGINT, user_id BIGINT, 
+            suggestion TEXT, status TEXT DEFAULT 'pending', type TEXT);""")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS punishment_logs (
+            group_id BIGINT, target_id BIGINT, admin_id BIGINT,
+            type TEXT, reason TEXT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (group_id, target_id, type));""")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS custom_filters (
+            group_id BIGINT, trigger TEXT, response TEXT,
+            PRIMARY KEY (group_id, trigger));""")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS message_logs (
+            group_id BIGINT, message_id BIGINT, user_id BIGINT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (group_id, message_id));""")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS proposals (
+            id SERIAL PRIMARY KEY, group_id BIGINT, proposer_id BIGINT,
+            action_type TEXT, key_target TEXT, value_target TEXT,
+            status TEXT DEFAULT 'pending', 
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_pinged_at TIMESTAMP
+        );""")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS votes (
+            proposal_id INT, user_id BIGINT, vote TEXT,
+            PRIMARY KEY (proposal_id, user_id));""")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS user_connections (
+            user_id BIGINT PRIMARY KEY, group_id BIGINT);""")
+        logger.info("✅ Database Connected & Tables Ready.")
+        return conn
     except Exception as e:
-        print(f"❌ Database Error: {e}")
-    return conn
+        logger.error(f"❌ CRITICAL DATABASE ERROR: {e}")
+        return None
 
-# --- Helper Functions ---
-def get_settings(group_id):
+# --- Helper Functions (Async) ---
+async def get_settings(group_id):
     if group_id in group_settings_cache: return group_settings_cache[group_id]
-    c = get_db_connection()
-    with c.cursor() as cur:
-        cur.execute("SELECT * FROM group_settings WHERE group_id=%s", (group_id,))
-        row = cur.fetchone()
-        if row: settings = dict(row)
-        else:
-            settings = {'anti_link': False, 'anti_forward': False, 'engagement_tracking': True}
-            cur.execute("INSERT INTO group_settings (group_id) VALUES (%s)", (group_id,))
-        group_settings_cache[group_id] = settings
-        return settings
+    conn = await get_db_connection()
+    if not conn: return {'anti_link': False, 'anti_forward': False, 'engagement_tracking': True}
+    row = await conn.fetchrow("SELECT * FROM group_settings WHERE group_id=$1", group_id)
+    if row:
+        settings = dict(row)
+    else:
+        settings = {'anti_link': False, 'anti_forward': False, 'engagement_tracking': True}
+        await conn.execute("INSERT INTO group_settings (group_id) VALUES ($1)", group_id)
+    group_settings_cache[group_id] = settings
+    await conn.close()
+    return settings
 
-def update_setting_db(group_id, key, val):
-    c = get_db_connection()
-    with c.cursor() as cur:
-        cur.execute(f"UPDATE group_settings SET {key}=%s WHERE group_id=%s", (val, group_id))
+async def update_setting_db(group_id, key, val):
+    allowed_keys = ['anti_link', 'anti_forward', 'engagement_tracking']
+    if key not in allowed_keys: return
+    conn = await get_db_connection()
+    if not conn: return
+    await conn.execute(f"UPDATE group_settings SET {key} = $1 WHERE group_id = $2", val, group_id)
     if group_id in group_settings_cache: group_settings_cache[group_id][key] = val
+    await conn.close()
 
+async def update_user_stats(group_id, user_id, username, points=0, warn_inc=0, violation_inc=0):
+    conn = await get_db_connection()
+    if not conn: return 0, 0
+    today = date.today()
+    row = await conn.fetchrow("SELECT * FROM user_stats WHERE group_id=$1 AND user_id=$2", group_id, user_id)
+    p_today = row['points_today'] if row else 0
+    v_today = row['violations_today'] if row else 0
+    if row and row['last_active_date'] != today:
+        p_today = 0
+        v_today = 0
+    final_points = points if (points > 0 and p_today < DAILY_POINT_CAP) else 0
+    final_violations = v_today + violation_inc
+    if row:
+        await conn.execute("""UPDATE user_stats SET message_count = message_count + 1,
+            total_points = total_points + $1, points_today = $2, last_active_date = $3,
+            warns = warns + $4, username = COALESCE($5, username), violations_today = $6
+            WHERE group_id=$7 AND user_id=$8""", 
+            final_points, p_today + final_points, today, warn_inc, username, final_violations, group_id, user_id)
+        await conn.close()
+        return row['warns'] + warn_inc, final_violations
+    else:
+        await conn.execute("""INSERT INTO user_stats (group_id, user_id, username, message_count, total_points, points_today, last_active_date, warns, violations_today)
+            VALUES ($1, $2, $3, 1, $4, $5, $6, $7, $8)""", group_id, user_id, username, final_points, final_points, today, warn_inc, violation_inc)
+        await conn.close()
+        return warn_inc, violation_inc
+
+async def log_punishment(group_id, target_id, admin_id, p_type, reason):
+    conn = await get_db_connection()
+    if not conn: return
+    await conn.execute("""INSERT INTO punishment_logs (group_id, target_id, admin_id, type, reason) VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (group_id, target_id, type) DO UPDATE SET admin_id=$3, reason=$5, timestamp=CURRENT_TIMESTAMP""",
+        group_id, target_id, admin_id, p_type, reason)
+    await conn.close()
+
+async def get_punisher(group_id, target_id, p_type):
+    conn = await get_db_connection()
+    if not conn: return None
+    row = await conn.fetchrow("SELECT admin_id FROM punishment_logs WHERE group_id=$1 AND target_id=$2 AND type=$3", group_id, target_id, p_type)
+    await conn.close()
+    return row['admin_id'] if row else None
+
+async def log_anon_message(group_id, message_id, user_id):
+    conn = await get_db_connection()
+    if not conn: return
+    await conn.execute("INSERT INTO message_logs (group_id, message_id, user_id) VALUES ($1, $2, $3)", group_id, message_id, user_id)
+    await conn.close()
+
+async def get_original_sender(group_id, message_id):
+    conn = await get_db_connection()
+    if not conn: return None
+    row = await conn.fetchrow("SELECT user_id FROM message_logs WHERE group_id = $1 AND message_id = $2", group_id, message_id)
+    await conn.close()
+    return row['user_id'] if row else None
+
+async def save_suggestion(group_id, user_id, text, status='pending', s_type='suggestion'):
+    conn = await get_db_connection()
+    if not conn: return
+    await conn.execute("INSERT INTO suggestions (group_id, user_id, suggestion, status, type) VALUES ($1, $2, $3, $4, $5)", group_id, user_id, text, status, s_type)
+    await conn.close()
+
+async def get_suggestions(group_id, s_type='suggestion'):
+    conn = await get_db_connection()
+    if not conn: return []
+    rows = await conn.fetch("SELECT * FROM suggestions WHERE group_id=$1 AND type=$2 ORDER BY id DESC", group_id, s_type)
+    await conn.close()
+    return rows
+
+async def delete_suggestion(s_id):
+    conn = await get_db_connection()
+    if not conn: return
+    await conn.execute("DELETE FROM suggestions WHERE id=$1", s_id)
+    await conn.close()
+
+# --- Permission Checks ---
+async def is_admin(update: Update, user_id=None):
+    if not user_id: user_id = update.message.from_user.id
+    if user_id == BOT_CREATOR_ID: return True 
+    chat = update.effective_chat
+    if chat.type == 'private': return False
+    try:
+        member = await chat.get_member(user_id)
+        return member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
+    except: return False
+
+async def is_group_owner(update: Update, user_id=None):
+    if not user_id: user_id = update.message.from_user.id
+    if user_id == BOT_CREATOR_ID: return True
+    try:
+        member = await update.effective_chat.get_member(user_id)
+        return member.status == ChatMemberStatus.OWNER
+    except: return False
+
+async def get_target_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.reply_to_message: return update.message.reply_to_message.from_user
+    if context.args:
+        username = context.args[0].replace("@", "")
+        conn = await get_db_connection()
+        if conn:
+            row = await conn.fetchrow("SELECT user_id FROM user_stats WHERE group_id=$1 AND username=$2", update.effective_chat.id, username)
+            if row:
+                try:
+                    member = await update.effective_chat.get_member(row['user_id'])
+                    await conn.close()
+                    return member.user
+                except:
+                    await conn.close()
+    return None
+
+# --- GOVERNANCE LOGIC ---
+
+async def create_proposal(update: Update, context: ContextTypes.DEFAULT_TYPE, type, target, value):
+    gid = update.effective_chat.id
+    uid = update.message.from_user.id
+    
+    if type == 'config' and target in OWNER_ONLY_CONFIGS:
+        if not await is_group_owner(update):
+            await update.message.reply_text(f"❌ **Denied.** Only the Owner can propose changes to `{target}`.")
+            return
+
+    conn = await get_db_connection()
+    if not conn: return await update.message.reply_text("❌ Database Error.")
+    
+    pid = await conn.fetchval("""INSERT INTO proposals (group_id, proposer_id, action_type, key_target, value_target)
+        VALUES ($1, $2, $3, $4, $5) RETURNING id""", gid, uid, type, target, value)
+    await conn.close()
+    
+    val_disp = value if value else target
+    proposal_text = (
+        f"🗳 **New Proposal #{pid}**\n"
+        f"**Group:** {update.effective_chat.title}\n"
+        f"**Action:** {type.replace('_', ' ').title()}\n"
+        f"**Target:** {val_disp}\n\n"
+        f"⚠️ **Secret Ballot:** Votes are hidden.\n"
+        f"To Vote: Reply with `/vote {pid} yes` or `no` here in DM."
+    )
+
+    await update.message.reply_text(f"✅ **Proposal #{pid} Created.**\nI am sending DMs to all admins now.")
+    
+    admins = await update.effective_chat.get_administrators()
+    for a in admins:
+        if not a.user.is_bot:
+            try: await context.bot.send_message(chat_id=a.user.id, text=proposal_text, parse_mode=ParseMode.MARKDOWN)
+            except: pass 
+            
+    await cast_vote(update, context, pid, 'yes', auto=True, group_context=update.effective_chat)
+
+async def cast_vote(update: Update, context: ContextTypes.DEFAULT_TYPE, pid, vote, auto=False, group_context=None):
+    conn = await get_db_connection()
+    if not conn: 
+        if not auto: await update.message.reply_text("❌ Database Error.")
+        return
+
+    user_id = update.message.from_user.id
+    
+    prop = await conn.fetchrow("SELECT * FROM proposals WHERE id=$1 AND status='pending'", pid)
+    
+    if not prop:
+        if not auto: await update.message.reply_text("❌ Proposal invalid or closed.")
+        await conn.close()
+        return
+
+    age = datetime.now() - prop['created_at']
+    if age > timedelta(days=30):
+        await conn.execute("UPDATE proposals SET status='expired' WHERE id=$1", pid)
+        if not auto: await update.message.reply_text("❌ Proposal expired.")
+        await conn.close()
+        return
+
+    await conn.execute("INSERT INTO votes (proposal_id, user_id, vote) VALUES ($1, $2, $3) ON CONFLICT (proposal_id, user_id) DO UPDATE SET vote=$3",
+                   pid, user_id, vote)
+    
+    if not auto: await update.message.reply_text(f"✅ Vote saved for #{pid}.")
+
+    try:
+        if group_context: chat = group_context
+        else: chat = await context.bot.get_chat(prop['group_id'])
+        current_admins = await chat.get_administrators()
+    except: 
+        await conn.close()
+        return
+
+    current_admin_ids = [a.user.id for a in current_admins if not a.user.is_bot]
+    
+    voted_ids = [r['user_id'] for r in await conn.fetch("SELECT user_id FROM votes WHERE proposal_id=$1", pid)]
+    
+    valid_votes_count = len([uid for uid in voted_ids if uid in current_admin_ids])
+    missing = len(current_admin_ids) - valid_votes_count
+    
+    if missing > 0: 
+        await conn.close()
+        return 
+
+    owner_id = next((a.user.id for a in current_admins if a.status == ChatMemberStatus.OWNER), None)
+    admins_except_owner = [a for a in current_admins if a.user.id != owner_id and not a.user.is_bot]
+    admin_pool_count = len(admins_except_owner)
+    
+    if prop['action_type'].startswith('blacklist_'):
+        # For blacklist, exclude owner from required voters/weights for faster process
+        owner_weight = 0
+        admin_weight = 100.0 / admin_pool_count if admin_pool_count > 0 else 0
+    else:
+        if admin_pool_count == 0 and owner_id:
+            owner_weight = 100.0
+            admin_weight = 0
+        elif not owner_id:
+            owner_weight = 0
+            admin_weight = 100.0 / admin_pool_count if admin_pool_count > 0 else 0
+        else:
+            owner_weight = 50.0
+            admin_weight = 50.0 / admin_pool_count if admin_pool_count > 0 else 0
+    
+    score_yes = 0.0
+    
+    all_votes = await conn.fetch("SELECT user_id, vote FROM votes WHERE proposal_id=$1", pid)
+        
+    for v in all_votes:
+        uid, choice = v['user_id'], v['vote']
+        if uid in current_admin_ids and choice == 'yes':
+            if uid == owner_id and prop['action_type'].startswith('blacklist_') == False:
+                score_yes += owner_weight
+            elif uid != owner_id:
+                score_yes += admin_weight
+            
+    if score_yes >= 50.0:
+        await execute_proposal(context, chat, prop)
+    else:
+        await conn.execute("UPDATE proposals SET status='rejected' WHERE id=$1", pid)
+        await context.bot.send_message(prop['group_id'], f"❌ **Proposal #{pid} Rejected.**\nConsensus was not reached.", parse_mode=ParseMode.MARKDOWN)
+    await conn.close()
+
+async def execute_proposal(context: ContextTypes.DEFAULT_TYPE, chat, prop):
+    conn = await get_db_connection()
+    if not conn: return
+    gid = prop['group_id']
+    target = prop['key_target']
+    val = prop['value_target']
+    
+    msg = ""
+    if prop['action_type'] == 'config':
+        await update_setting_db(gid, target, val == 'true')
+        msg = f"✅ **Proposal #{prop['id']} Passed!**\nSetting `{target}` updated."
+    elif prop['action_type'] == 'blacklist_add':
+        await conn.execute("INSERT INTO blacklists VALUES ($1, $2) ON CONFLICT DO NOTHING", gid, val)
+        msg = f"✅ **Proposal #{prop['id']} Passed!**\nBlacklist updated."
+    elif prop['action_type'] == 'blacklist_remove':
+        await conn.execute("DELETE FROM blacklists WHERE group_id=$1 AND word=$2", gid, val)
+        msg = f"✅ **Proposal #{prop['id']} Passed!**\nBlacklist updated."
+    elif prop['action_type'] == 'suggestion_status':
+        await delete_suggestion(target)  # target is suggestion ID
+        msg = f"✅ **Proposal #{prop['id']} Passed!**\nSuggestion #{target} marked as {val} and deleted."
+    elif prop['action_type'] == 'report_status':
+        await delete_suggestion(target)
+        msg = f"✅ **Proposal #{prop['id']} Passed!**\nReport #{target} marked as taken care of and deleted."
+
+    await conn.execute("UPDATE proposals SET status='passed' WHERE id=$1", prop['id'])
+    await context.bot.send_message(gid, msg, parse_mode=ParseMode.MARKDOWN)
+    await conn.close()
+
+async def ping_voters(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    if not context.args: return await update.message.reply_text("Usage: `/ping <proposal_id>`")
+    try: pid = int(context.args[0])
+    except: return
+    
+    conn = await get_db_connection()
+    if not conn: return await update.message.reply_text("❌ Database Error.")
+    
+    prop = await conn.fetchrow("SELECT * FROM proposals WHERE id=$1 AND status='pending'", pid)
+    
+    if not prop: 
+        await conn.close()
+        return await update.message.reply_text("❌ Invalid proposal.")
+    if prop['proposer_id'] != user_id: 
+        await conn.close()
+        return await update.message.reply_text("❌ Only the proposer can ping.")
+    
+    last_ping = prop['last_pinged_at']
+    if last_ping and datetime.now() - last_ping < timedelta(hours=24):
+        await conn.close()
+        return await update.message.reply_text("⏳ You can only ping once every 24 hours.")
+
+    try: chat = await context.bot.get_chat(prop['group_id'])
+    except: 
+        await conn.close()
+        return await update.message.reply_text("❌ Cannot access group.")
+    
+    current_admins = await chat.get_administrators()
+    
+    voted_ids = [r['user_id'] for r in await conn.fetch("SELECT user_id FROM votes WHERE proposal_id=$1", pid)]
+        
+    missing_admins = [a for a in current_admins if a.user.id not in voted_ids and not a.user.is_bot]
+    if not missing_admins: 
+        await conn.close()
+        return await update.message.reply_text("✅ Everyone has voted!")
+    
+    sent_count = 0
+    for ma in missing_admins:
+        try:
+            await context.bot.send_message(ma.user.id, f"🔔 **Reminder:** Vote on Proposal #{pid}.\nGroup: {chat.title}\nReply `/vote {pid} yes/no`.")
+            sent_count += 1
+        except: pass
+        
+    await conn.execute("UPDATE proposals SET last_pinged_at=CURRENT_TIMESTAMP WHERE id=$1", pid)
+    await conn.close()
+    await update.message.reply_text(f"✅ Reminders sent to {sent_count} people.")
+
+async def cancel_proposal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin(update): return
+    if not context.args: return await update.message.reply_text("Usage: `/cancel <id>`")
+    
+    conn = await get_db_connection()
+    if not conn: return await update.message.reply_text("❌ Database Error.")
+    
+    try:
+        pid = int(context.args[0])
+        prop = await conn.fetchrow("SELECT * FROM proposals WHERE id=$1 AND status='pending'", pid)
+        if not prop: 
+            await conn.close()
+            return await update.message.reply_text("❌ Invalid ID.")
+        if prop['proposer_id'] != update.message.from_user.id:
+            await conn.close()
+            return await update.message.reply_text("❌ You can only cancel your own proposals.")
+        await conn.execute("UPDATE proposals SET status='cancelled' WHERE id=$1", pid)
+        await conn.close()
+        await update.message.reply_text(f"🗑 **Proposal
 def update_user_stats(group_id, user_id, username, points=0, warn_inc=0):
     c = get_db_connection()
     today = date.today()
