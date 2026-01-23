@@ -1,4 +1,5 @@
-python-telegram-bot[asyncio]
+python-telegram-bot
 psycopg2-binary
+asyncpg
 Flask
 pip install python-telegram-bot asyncpg flask python-dotenv
