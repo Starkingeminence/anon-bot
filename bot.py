@@ -975,7 +975,12 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("view_reports", view_reports))
     
     app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, handle_anon_dm))
-    app.add_handler(MessageHandler(filters.ChatType.GROUPS & ~filters.COMMAND, group_police))
+    app.add_handler(
+    MessageHandler(
+        filters.ChatType.GROUP,
+        group_police
+    )
+    )
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_handler))
     app.add_handler(CallbackQueryHandler(callback_handler))
 
