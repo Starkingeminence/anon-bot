@@ -1,42 +1,64 @@
-import asyncio
-from client import bot
-from database.connection import db
-from database.models import create_tables
+import os
+from telethon import TelegramClient, events
+from config import Config
+from client import bot_client
+from connection import db
+from groups import handle_new_group
+from users import handle_new_user
+from voting import handle_vote
+from captcha import verify_captcha
+from fastest_fingers import handle_fastest_fingers
+from qa import handle_qa_game
+from leaderboard import update_leaderboard
 
-# Import your modules here to register handlers
-from core import permissions, groups, users
-from moderation import captcha, blacklist, language
-from governance import voting, weights
-from payments import tiers, ton, grace
-from dm_features import personal_votes
-from games import fastest_fingers, qa, leaderboard
-from utils import telegram, time, text
+# -------------------------------------
+# Start Bot
+# -------------------------------------
 
 async def main():
-    """
-    Main entry point for the bot.
-    Connects to the database, creates tables if necessary,
-    starts the bot, and keeps it running until disconnected.
-    """
-    # Connect to PostgreSQL
+    print("Bot starting...")
+    
+    # Connect to DB
     await db.connect()
+    print("Database connected")
+    
+    # Start the Telethon client
+    await bot_client.start()
+    print("Telegram client started")
+    
+    # Listen for new messages
+    @bot_client.on(events.NewMessage)
+    async def on_new_message(event):
+        chat_id = event.chat_id
+        sender = event.sender_id
+        message = event.message.message
+        
+        # Handle new groups or join events
+        await handle_new_group(chat_id)
+        
+        # Handle user registration / first-time joining
+        await handle_new_user(sender, chat_id)
+        
+        # Check captcha if needed
+        await verify_captcha(sender, chat_id, message)
+        
+        # Check for commands related to games
+        await handle_fastest_fingers(sender, chat_id, message)
+        await handle_qa_game(sender, chat_id, message)
+        
+        # Check voting commands
+        await handle_vote(sender, chat_id, message)
+        
+        # Update leaderboard if necessary
+        await update_leaderboard(chat_id)
 
-    # Create tables (safe to run multiple times)
-    await create_tables(db.pool)
+    print("Bot is now listening for events...")
+    await bot_client.run_until_disconnected()
 
-    print("✅ Database connected and tables verified")
 
-    # Here you can initialize additional modules if needed
-    print("✅ All modules loaded. Bot is starting...")
-
-    try:
-        # Start the bot and run until disconnected
-        await bot.run_until_disconnected()
-    finally:
-        # Ensure DB disconnects cleanly on shutdown
-        await db.close()
-        print("Bot stopped.")
-
+# -------------------------------------
+# Entry point
+# -------------------------------------
 if __name__ == "__main__":
-    # Run the async main loop
+    import asyncio
     asyncio.run(main())
