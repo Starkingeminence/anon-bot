@@ -1,115 +1,60 @@
-import logging
-from database.connection import db
-from core.permissions import get_on_duty_admins, is_admin
-from datetime import datetime, timedelta
+# voting.py
+import asyncio
 
-logger = logging.getLogger(__name__)
-
-# -----------------------------
-# Create a new vote
-# -----------------------------
-async def create_vote(group_id: int, creator_id: int, topic: str, options: list, duration: int = 3600):
-    """
-    Create a new governance vote in a group.
-    """
-    query = """
-        INSERT INTO votes (group_id, topic, options, created_by, duration, created_at, is_active)
-        VALUES ($1, $2, $3, $4, $5, $6, TRUE)
-        RETURNING id
-    """
-    vote_id = await db.fetchrow(query, group_id, topic, options, creator_id, duration, datetime.utcnow())
-    logger.info(f"Created vote {vote_id['id']} for group {group_id} with topic '{topic}'")
-    return vote_id['id']
-
+# Stores votes per decision
+# Structure: { decision_id: { admin_id: vote_value } }
+votes_cast = {}
 
 # -----------------------------
 # Cast a vote
 # -----------------------------
-async def cast_vote(vote_id: int, user_id: int, selected_option: str):
+async def cast_vote(admin_id: int, decision_id: str, vote: str):
     """
-    Cast a vote for a given user.
+    Registers a vote from an admin on a given decision.
+    Each admin can vote only once per decision.
     """
-    # Check if vote is active
-    vote = await db.fetchrow("SELECT * FROM votes WHERE id = $1", vote_id)
-    if not vote or not vote["is_active"]:
-        return False
+    if decision_id not in votes_cast:
+        votes_cast[decision_id] = {}
 
-    # Optional: check if user is an admin or member if needed
-    # Prevent duplicate votes
-    query = """
-        INSERT INTO vote_results (vote_id, user_id, selected_option, voted_at)
-        VALUES ($1, $2, $3, $4)
-        ON CONFLICT (vote_id, user_id)
-        DO UPDATE SET selected_option = EXCLUDED.selected_option, voted_at = EXCLUDED.voted_at
-    """
-    await db.execute(query, vote_id, user_id, selected_option, datetime.utcnow())
-    logger.info(f"User {user_id} voted '{selected_option}' in vote {vote_id}")
-    return True
+    # Check if admin already voted
+    if admin_id in votes_cast[decision_id]:
+        return "You already voted on this decision!"
 
+    # Register the vote
+    votes_cast[decision_id][admin_id] = vote
+    return "Vote accepted ✅"
 
 # -----------------------------
-# Calculate results
+# Tally votes
 # -----------------------------
-async def calculate_vote_results(vote_id: int):
+async def tally_votes(decision_id: str):
     """
-    Returns a dictionary of option -> weighted votes.
+    Returns the results for a given decision.
+    Output: { 'option1': 3, 'option2': 2 } etc.
     """
-    vote = await db.fetchrow("SELECT * FROM votes WHERE id = $1", vote_id)
-    if not vote:
-        return None
+    if decision_id not in votes_cast:
+        return {}
 
-    results = await db.fetch("SELECT * FROM vote_results WHERE vote_id = $1", vote_id)
-
-    # Prepare tally
-    tally = {option: 0 for option in vote["options"]}
-
-    for row in results:
-        user_id = row["user_id"]
-        selected_option = row["selected_option"]
-        weight = 1  # Default weight
-
-        # Check if user is admin and on-duty (admins get full weight)
-        if await is_admin(user_id, vote["group_id"]):
-            on_duty = await get_on_duty_admins(vote["group_id"])
-            if user_id in on_duty:
-                weight = 1  # full weight for on-duty admin
-            else:
-                weight = 0.5  # off-duty admins count partially
-
-        tally[selected_option] += weight
-
-    return tally
-
-
-# -----------------------------
-# End a vote
-# -----------------------------
-async def end_vote(vote_id: int):
-    """
-    Marks a vote as inactive and returns the results.
-    """
-    results = await calculate_vote_results(vote_id)
-
-    # Mark inactive
-    await db.execute("UPDATE votes SET is_active = FALSE WHERE id = $1", vote_id)
-    logger.info(f"Vote {vote_id} ended with results: {results}")
+    results = {}
+    for vote in votes_cast[decision_id].values():
+        results[vote] = results.get(vote, 0) + 1
     return results
 
+# -----------------------------
+# Reset votes
+# -----------------------------
+async def reset_votes(decision_id: str):
+    """
+    Clears votes for a specific decision.
+    """
+    if decision_id in votes_cast:
+        del votes_cast[decision_id]
 
 # -----------------------------
-# Check for expired votes
+# Helper: check if an admin has voted
 # -----------------------------
-async def check_expired_votes():
-    """
-    Automatically end votes whose duration has expired.
-    """
-    now = datetime.utcnow()
-    query = """
-        SELECT id, group_id, topic
-        FROM votes
-        WHERE is_active = TRUE AND created_at + (duration || ' seconds')::interval < $1
-    """
-    expired_votes = await db.fetch(query, now)
+async def has_voted(admin_id: int, decision_id: str):
+    return decision_id in votes_cast and admin_id in votes_cast[decision_id]    expired_votes = await db.fetch(query, now)
 
     for vote in expired_votes:
         results = await end_vote(vote["id"])
