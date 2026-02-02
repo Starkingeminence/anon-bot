@@ -1,9 +1,9 @@
 import asyncio
 from client import bot
 from database.connection import db
+from database.models import create_tables
 
 # Import your modules here to register handlers
-# Example placeholders
 from core import permissions, groups, users
 from moderation import captcha, blacklist, language
 from governance import voting, weights
@@ -15,17 +15,19 @@ from utils import telegram, time, text
 async def main():
     """
     Main entry point for the bot.
-    Connects to the database, starts the bot,
-    and keeps it running until disconnected.
+    Connects to the database, creates tables if necessary,
+    starts the bot, and keeps it running until disconnected.
     """
     # Connect to PostgreSQL
     await db.connect()
 
-    # Here you can initialize any tables if needed
-    # from database.models import create_tables
-    # await create_tables(db.pool)
+    # Create tables (safe to run multiple times)
+    await create_tables(db.pool)
 
-    print("All modules loaded. Bot is starting...")
+    print("✅ Database connected and tables verified")
+
+    # Here you can initialize additional modules if needed
+    print("✅ All modules loaded. Bot is starting...")
 
     try:
         # Start the bot and run until disconnected
