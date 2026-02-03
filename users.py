@@ -1,7 +1,7 @@
 # users.py
 """
 In-memory user management for the bot.
-Provides functions to add and retrieve users.
+Provides functions to add, retrieve, and handle new users.
 """
 
 # In-memory "database" of users
@@ -52,3 +52,21 @@ async def list_users():
         list[dict]: All user records
     """
     return list(_users_db.values())
+
+
+# -------------------------------
+# Convenience function for new users
+# -------------------------------
+async def handle_new_user(user_id: int, username: str = None):
+    """
+    Handle a new user joining.
+    Adds the user to the database if not exists.
+    
+    Args:
+        user_id (int): Telegram user ID
+        username (str): Telegram username
+    
+    Returns:
+        dict: User record
+    """
+    return await add_user(user_id, username)
