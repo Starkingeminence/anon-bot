@@ -1,7 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta
-from database.connection import db
-from core.groups import set_group_tier
+from connection import db
+from groups import set_group_tier
 import logging
 
 logger = logging.getLogger(__name__)
