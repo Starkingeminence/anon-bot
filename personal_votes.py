@@ -1,5 +1,5 @@
 import logging
-from database.connection import db
+from connection import db
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
