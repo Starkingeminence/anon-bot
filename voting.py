@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime, timedelta
-from database.connection import db  # async DB connection
+from connection import db  # async DB connection
 
 logger = logging.getLogger(__name__)
 
