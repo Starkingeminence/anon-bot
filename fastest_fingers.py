@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from database.connection import db
+from connection import db
 from core.users import add_user, get_user
 from telethon import TelegramClient, Button, events
 
