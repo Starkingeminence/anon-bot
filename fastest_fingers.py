@@ -1,115 +1,58 @@
-import asyncio
-import logging
-from datetime import datetime, timedelta
-from connection import db
+# fastest_fingers.py
+"""
+Fastest Fingers game logic for the bot.
+Tracks ongoing games, winners, and handles new game rounds.
+"""
+
 from users import add_user, get_user
-from telethon import TelegramClient, Button, events
 
-logger = logging.getLogger(__name__)
+# In-memory storage for ongoing Fastest Fingers games
+fastest_fingers_games = {}  # {group_id: {"winners": [], "max_winners": 3}}
 
-# -----------------------------
-# Game state
-# -----------------------------
-# {group_id: {game_id: {"question": str, "answer": str, "max_winners": int, "start_time": datetime, "players": {user_id: timestamp}, "finished": bool}}}
-fastest_fingers_games = {}
-
-# -----------------------------
-# Start a new game
-# -----------------------------
-async def start_game(bot: TelegramClient, group_id: int, question: str, answer: str, max_winners: int = 3, duration_seconds: int = 15):
+async def handle_fastest_fingers(group_id: int, user_id: int, username: str = None):
     """
-    Starts a fastest fingers game in a group.
+    Handles a new participant in a Fastest Fingers game.
+    Adds user to the game and returns updated winners list.
+
+    Args:
+        group_id (int): Telegram group ID
+        user_id (int): Telegram user ID
+        username (str): Telegram username
+
+    Returns:
+        dict: Current game state for the group
     """
-    game_id = f"{group_id}_{datetime.utcnow().timestamp()}"
-    fastest_fingers_games[group_id] = {
-        "game_id": game_id,
-        "question": question,
-        "answer": answer.lower(),
-        "max_winners": max_winners,
-        "start_time": datetime.utcnow(),
-        "duration": duration_seconds,
-        "players": {},
-        "finished": False,
-        "winners": []
-    }
+    # Ensure the user exists
+    await add_user(user_id, username)
 
-    # Send question to group
-    await bot.send_message(
-        group_id,
-        f"🏎️ Fastest Fingers Game Started!\nQuestion: {question}\nFirst {max_winners} correct answers win!\nYou have {duration_seconds} seconds!"
-    )
-
-    # Start timer for game
-    asyncio.create_task(end_game_after_timeout(bot, group_id, duration_seconds))
-
-    logger.info(f"Started fastest fingers game {game_id} in group {group_id}")
-
-
-# -----------------------------
-# Player submits answer
-# -----------------------------
-async def submit_answer(bot: TelegramClient, group_id: int, user_id: int, answer: str):
-    """
-    Process a player's answer submission.
-    """
+    # Initialize game for the group if it doesn't exist
     if group_id not in fastest_fingers_games:
-        return False, "No active game in this group."
+        fastest_fingers_games[group_id] = {
+            "winners": [],
+            "max_winners": 3
+        }
 
     game = fastest_fingers_games[group_id]
 
-    if game["finished"]:
-        return False, "Game already finished."
-
-    # Check if user already has a correct answer
-    if user_id in game["winners"]:
-        return False, "You already won this game."
-
-    # Record timestamp for this attempt
-    game["players"][user_id] = datetime.utcnow()
-
-    # Check correctness
-    if answer.lower() == game["answer"]:
+    # Add user to winners list if not already present and limit to max_winners
+    if user_id not in game["winners"] and len(game["winners"]) < game["max_winners"]:
         game["winners"].append(user_id)
-        # Check if max winners reached
-        if len(game["winners"]) >= game["max_winners"]:
-            await end_game(bot, group_id)
-        return True, "Correct!"
-    else:
-        return False, "Incorrect. Try again!"
+
+    return game
 
 
-# -----------------------------
-# End game manually
-# -----------------------------
-async def end_game(bot: TelegramClient, group_id: int):
+async def reset_game(group_id: int):
     """
-    Ends the fastest fingers game and announces winners.
+    Resets the Fastest Fingers game for a group.
+    
+    Args:
+        group_id (int): Telegram group ID
     """
-    if group_id not in fastest_fingers_games:
-        return
-
-    game = fastest_fingers_games[group_id]
-    if game["finished"]:
-        return
-
-    game["finished"] = True
-
-    winners = game["winners"]
-    if winners:
-        winner_mentions = []
-        for user_id in winners:
-            user = await get_user(user_id)
-            username = user["username"] if user else str(user_id)
-            winner_mentions.append(f"@{username}")
-        message = f"🏁 Fastest Fingers Game Ended!\nWinners: {', '.join(winner_mentions)}"
-    else:
-        message = f"🏁 Fastest Fingers Game Ended!\nNo winners this round."
-
-    # Send result to group
-    await bot.send_message(group_id, message)
-
-    # Cleanup
-    fastest_fingers_games.pop(group_id, None)
+    if group_id in fastest_fingers_games:
+        fastest_fingers_games[group_id] = {
+            "winners": [],
+            "max_winners": 3
+        }    fastest_fingers_games.pop(group_id, None)
     logger.info(f"Game in group {group_id} ended. Winners: {winners}")
 
 
