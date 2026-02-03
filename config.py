@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 
+# Load environment variables
 load_dotenv()
 
 # Telegram credentials
@@ -11,9 +12,15 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 # Database
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
-# Basic validation
-if not API_ID or not API_HASH or not BOT_TOKEN:
-    raise RuntimeError("Missing required Telegram environment variables")
+# Validation (fail fast)
+if not API_ID:
+    raise RuntimeError("API_ID is missing")
+
+if not API_HASH:
+    raise RuntimeError("API_HASH is missing")
+
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN is missing")
 
 if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL is required")
+    raise RuntimeError("DATABASE_URL is missing")
