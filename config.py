@@ -1,68 +1,37 @@
-import asyncio
-from telethon import events
+import os
+from dotenv import load_dotenv
 
-import config
-from client import bot_client
-from connection import db
-from groups import handle_new_group
-from users import handle_new_user
-from voting import handle_vote
-from captcha import verify_captcha
-from fastest_fingers import handle_fastest_fingers
-from qa import handle_qa_game
-from leaderboard import update_leaderboard
+# Load environment variables
+load_dotenv()
 
+# Telegram credentials
+API_ID = int(os.getenv("API_ID", 0))
+API_HASH = os.getenv("API_HASH", "")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
-# -------------------------------------
-# Start Bot
-# -------------------------------------
+# Database
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 
-async def main():
-    print("Bot starting...")
+# General settings
+DEFAULT_TIMEZONE = os.getenv("DEFAULT_TIMEZONE", "UTC")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
-    # Connect to DB
-    await db.connect()
-    print("Database connected")
+# Feature flags
+ENABLE_GAMES = os.getenv("ENABLE_GAMES", "True").lower() == "true"
+ENABLE_DM_VOTES = os.getenv("ENABLE_DM_VOTES", "True").lower() == "true"
 
-    # Start the Telethon client
-    await bot_client.start(bot_token=config.BOT_TOKEN)
-    print("Telegram client started")
+# Validation
+missing = []
+if API_ID == 0:
+    missing.append("API_ID")
+if not API_HASH:
+    missing.append("API_HASH")
+if not BOT_TOKEN:
+    missing.append("BOT_TOKEN")
+if not DATABASE_URL:
+    missing.append("DATABASE_URL")
 
-    # Listen for new messages
-    @bot_client.on(events.NewMessage)
-    async def on_new_message(event):
-        chat_id = event.chat_id
-        sender_id = event.sender_id
-        message = event.message.message or ""
-
-        # Handle group initialization
-        await handle_new_group(chat_id)
-
-        # Handle user registration
-        await handle_new_user(sender_id, chat_id)
-
-        # Captcha verification
-        await verify_captcha(sender_id, chat_id, message)
-
-        # Games
-        if config.ENABLE_GAMES:
-            await handle_fastest_fingers(sender_id, chat_id, message)
-            await handle_qa_game(sender_id, chat_id, message)
-
-        # Voting
-        if config.ENABLE_DM_VOTES:
-            await handle_vote(sender_id, chat_id, message)
-
-        # Leaderboard update
-        await update_leaderboard(chat_id)
-
-    print("Bot is now listening for events...")
-    await bot_client.run_until_disconnected()
-
-
-# -------------------------------------
-# Entry point
-# -------------------------------------
-
-if __name__ == "__main__":
-    asyncio.run(main())
+if missing:
+    raise RuntimeError(
+        f"Missing required environment variables: {', '.join(missing)}"
+    )
