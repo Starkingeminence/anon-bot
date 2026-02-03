@@ -1,28 +1,68 @@
-import os
-from dotenv import load_dotenv
+import asyncio
+from telethon import events
 
-# Load environment variables from .env file
-load_dotenv()
+import config
+from client import bot_client
+from connection import db
+from groups import handle_new_group
+from users import handle_new_user
+from voting import handle_vote
+from captcha import verify_captcha
+from fastest_fingers import handle_fastest_fingers
+from qa import handle_qa_game
+from leaderboard import update_leaderboard
 
-# Telethon API credentials
-API_ID = int(os.getenv("API_ID", 0))          # Telegram API ID
-API_HASH = os.getenv("API_HASH", "")          # Telegram API hash
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")        # Bot token from BotFather
 
-# PostgreSQL database URL
-DATABASE_URL = os.getenv("DATABASE_URL", "")  # e.g., postgresql://user:password@host:port/dbname
+# -------------------------------------
+# Start Bot
+# -------------------------------------
 
-# General bot settings
-DEFAULT_TIMEZONE = os.getenv("DEFAULT_TIMEZONE", "UTC")   # Can be used for timestamps
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")                # Logging level
+async def main():
+    print("Bot starting...")
 
-# Optional: feature flags or defaults
-ENABLE_GAMES = os.getenv("ENABLE_GAMES", "True") == "True"
-ENABLE_DM_VOTES = os.getenv("ENABLE_DM_VOTES", "True") == "True"
+    # Connect to DB
+    await db.connect()
+    print("Database connected")
 
-# Validation checks
-if API_ID == 0 or not API_HASH or not BOT_TOKEN or not DATABASE_URL:
-    raise ValueError(
-        "One or more required environment variables are missing: "
-        "API_ID, API_HASH, BOT_TOKEN, DATABASE_URL"
-    )
+    # Start the Telethon client
+    await bot_client.start(bot_token=config.BOT_TOKEN)
+    print("Telegram client started")
+
+    # Listen for new messages
+    @bot_client.on(events.NewMessage)
+    async def on_new_message(event):
+        chat_id = event.chat_id
+        sender_id = event.sender_id
+        message = event.message.message or ""
+
+        # Handle group initialization
+        await handle_new_group(chat_id)
+
+        # Handle user registration
+        await handle_new_user(sender_id, chat_id)
+
+        # Captcha verification
+        await verify_captcha(sender_id, chat_id, message)
+
+        # Games
+        if config.ENABLE_GAMES:
+            await handle_fastest_fingers(sender_id, chat_id, message)
+            await handle_qa_game(sender_id, chat_id, message)
+
+        # Voting
+        if config.ENABLE_DM_VOTES:
+            await handle_vote(sender_id, chat_id, message)
+
+        # Leaderboard update
+        await update_leaderboard(chat_id)
+
+    print("Bot is now listening for events...")
+    await bot_client.run_until_disconnected()
+
+
+# -------------------------------------
+# Entry point
+# -------------------------------------
+
+if __name__ == "__main__":
+    asyncio.run(main())
