@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime
-from core.users import get_user
+from users import get_user
 from games import fastest_fingers, qa
 
 logger = logging.getLogger(__name__)
