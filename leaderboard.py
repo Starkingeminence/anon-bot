@@ -1,8 +1,8 @@
 import logging
 from datetime import datetime
 from users import get_user
-import fastest_fingers
-import qa
+from fastest_fingers import fastest_fingers_games
+from qa import qa_games
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ async def generate_leaderboard(group_id: int):
     # -------------------------
     # Fastest Fingers results
     # -------------------------
-    ff_game = fastest_fingers.fastest_fingers_games.get(group_id)
+    ff_game = fastest_fingers_games.get(group_id)
     if ff_game:
         winners = ff_game.get("winners", [])
         for idx, user_id in enumerate(winners):
@@ -30,9 +30,8 @@ async def generate_leaderboard(group_id: int):
     # -------------------------
     # Q&A/MCQ results
     # -------------------------
-    qa_game = qa.qa_games.get(group_id)
+    qa_game = qa_games.get(group_id)
     if qa_game and qa_game.get("finished", False):
-        # Sum scores from players_answers
         for key, answer in qa_game["players_answers"].items():
             user_id, q_index = key
             correct_answer = qa_game["questions"][q_index]["a"].lower()
@@ -40,7 +39,7 @@ async def generate_leaderboard(group_id: int):
                 scores[user_id] = scores.get(user_id, 0) + 1
 
     # -------------------------
-    # Build leaderboard
+    # Build leaderboard text
     # -------------------------
     if not scores:
         return "No scores yet."
@@ -54,3 +53,18 @@ async def generate_leaderboard(group_id: int):
         leaderboard_text += f"{rank}. @{username} — {pts} pts\n"
 
     return leaderboard_text
+
+# -----------------------------
+# Update leaderboard
+# -----------------------------
+async def update_leaderboard(group_id: int, send_message_callback):
+    """
+    Generates the leaderboard and sends it using the provided callback function.
+    The callback is responsible for sending the message to the group/chat.
+    """
+    try:
+        text = await generate_leaderboard(group_id)
+        await send_message_callback(group_id, text)
+        logger.info(f"Leaderboard updated for group {group_id}")
+    except Exception as e:
+        logger.error(f"Failed to update leaderboard for group {group_id}: {e}")
