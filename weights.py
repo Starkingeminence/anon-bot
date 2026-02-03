@@ -1,4 +1,4 @@
-from core.permissions import get_on_duty_admins, is_admin, is_owner
+from permissions import get_on_duty_admins, is_admin, is_owner
 from datetime import datetime
 
 # -----------------------------
