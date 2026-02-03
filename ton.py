@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime, timedelta
-from database.connection import db
-from core.groups import set_group_tier
+from connection import db
+from groups import set_group_tier
 
 logger = logging.getLogger(__name__)
 
