@@ -22,7 +22,7 @@ async def get_admin_weights(group_id: int):
         SELECT user_id FROM permissions
         WHERE group_id = $1 AND role = 'admin'
     """
-    from database.connection import db
+    from connection import db
     all_admins_rows = await db.fetch(all_admins_query, group_id)
     all_admins = [row["user_id"] for row in all_admins_rows]
 
