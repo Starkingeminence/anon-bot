@@ -48,21 +48,11 @@ async def reset_game(group_id: int):
     Args:
         group_id (int): Telegram group ID
     """
-    if group_id in fastest_fingers_games:
-        fastest_fingers_games[group_id] = {
-            "winners": [],
-            "max_winners": 3
-        }    fastest_fingers_games.pop(group_id, None)
-    logger.info(f"Game in group {group_id} ended. Winners: {winners}")
+    # Reset the game state
+    fastest_fingers_games[group_id] = {
+        "winners": [],
+        "max_winners": 3
+    }
 
-
-# -----------------------------
-# Timer-based automatic ending
-# -----------------------------
-async def end_game_after_timeout(bot: TelegramClient, group_id: int, duration_seconds: int):
-    """
-    Ends the game after duration expires.
-    """
-    await asyncio.sleep(duration_seconds)
-    if group_id in fastest_fingers_games:
-        await end_game(bot, group_id)
+    # Optional: remove the group entirely if you want
+    # fastest_fingers_games.pop(group_id, None)
