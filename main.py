@@ -1,86 +1,83 @@
 import os
 import asyncio
-from telethon import TelegramClient, events
-from connection import Database
-from aiohttp import web
+import logging
 
-# --------------------------
-# CONFIG
-# --------------------------
-API_ID = int(os.getenv("TELEGRAM_API_ID"))
+from telethon import TelegramClient, events
+from telethon.tl import functions
+
+from connection import db  # Ensure your connection.py exposes `db` correctly
+
+# ----------------------
+# Logging setup
+# ----------------------
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# ----------------------
+# Environment variables
+# ----------------------
+DATABASE_URL = os.getenv("DATABASE_URL")
+API_ID = os.getenv("TELEGRAM_API_ID")
 API_HASH = os.getenv("TELEGRAM_API_HASH")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-DATABASE_URL = os.getenv("DATABASE_URL")
-PORT = int(os.getenv("PORT", 8000))  # Render provides this
+WEB_PORT = int(os.getenv("PORT", 10000))  # Render default port
 
-# --------------------------
-# DATABASE
-# --------------------------
-db = Database()
+if not all([DATABASE_URL, API_ID, API_HASH, BOT_TOKEN]):
+    logger.error("Missing one or more required environment variables!")
+    raise SystemExit("Check DATABASE_URL, TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_BOT_TOKEN")
 
-# --------------------------
-# TELEGRAM CLIENT
-# --------------------------
-client = TelegramClient('bot_session', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+# ----------------------
+# Telegram client
+# ----------------------
+client = TelegramClient("bot_session", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
-
-# --------------------------
-# HANDLERS
-# --------------------------
+# ----------------------
+# Event handlers
+# ----------------------
 @client.on(events.NewMessage)
-async def handle_new_message(event):
+async def on_new_message(event):
     sender = await event.get_sender()
     chat = await event.get_chat()
     message = event.message.message
 
-    sender_id = sender.id
-    chat_id = chat.id
+    # Example: simple reply
+    await event.respond("Bot received your message!")
 
-    if message.startswith("/raffle"):
-        await handle_raffle_command(chat_id, sender_id, message)
+    # TODO: call your game / raffle handlers here
+    # await handle_qa_game(sender.id, chat.id, message)
 
-
-async def handle_raffle_command(chat_id, sender_id, message):
-    await client.send_message(chat_id, "🎉 Raffle is being processed...")
-    await asyncio.sleep(1)
-    await client.send_message(chat_id, "🎲 Picking winner...")
-    await asyncio.sleep(1)
-    await client.send_message(chat_id, "🏆 Winner: @example_user")
-
-
-# --------------------------
-# SIMPLE WEB SERVER TO KEEP RENDER HAPPY
-# --------------------------
-async def handle_root(request):
-    return web.Response(text="Bot is running!")
-
-async def start_web_app():
-    app = web.Application()
-    app.router.add_get("/", handle_root)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', PORT)
-    await site.start()
-    print(f"Web service listening on port {PORT}")
-
-
-# --------------------------
-# MAIN FUNCTION
-# --------------------------
+# ----------------------
+# Main async entrypoint
+# ----------------------
 async def main():
-    print(f"DATABASE_URL: {DATABASE_URL}")
+    logger.info(f"DATABASE_URL: {DATABASE_URL}")
+
+    # Connect to DB
     try:
         await db.connect(DATABASE_URL)
-        print("Database connected ✅")
+        logger.info("Database connected ✅")
     except Exception as e:
-        print(f"Database connection failed ❌: {e}")
+        logger.error(f"Database connection failed ❌: {e}")
 
-    await start_web_app()       # Keeps Render happy
-    await client.run_until_disconnected()  # Runs Telegram client
+    # Start Telegram client
+    await client.start()
+    logger.info("Telegram client started")
 
+    # If you have any background tasks, start them here
 
-# --------------------------
-# ENTRY POINT
-# --------------------------
+    # Keep the bot running
+    await client.run_until_disconnected()
+
+# ----------------------
+# Entrypoint
+# ----------------------
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Handle Render’s event loop issues
+    try:
+        loop = asyncio.get_running_loop()
+        if loop.is_running():
+            asyncio.ensure_future(main())
+        else:
+            asyncio.run(main())
+    except RuntimeError:
+        asyncio.run(main())
