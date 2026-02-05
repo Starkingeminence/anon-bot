@@ -2,73 +2,85 @@ import os
 import asyncio
 from telethon import TelegramClient, events
 from connection import Database
+from aiohttp import web
 
-# -------------------------------
-# Configuration
-# -------------------------------
-API_ID = int(os.getenv("API_ID"))           # Your Telegram API ID
-API_HASH = os.getenv("API_HASH")           # Your Telegram API hash
-BOT_TOKEN = os.getenv("BOT_TOKEN")         # Bot token from @BotFather
-DATABASE_URL = os.getenv("DATABASE_URL")   # Postgres connection string
+# --------------------------
+# CONFIG
+# --------------------------
+API_ID = int(os.getenv("TELEGRAM_API_ID"))
+API_HASH = os.getenv("TELEGRAM_API_HASH")
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
+PORT = int(os.getenv("PORT", 8000))  # Render provides this
 
-# -------------------------------
-# Initialize database and client
-# -------------------------------
-db = Database()  # We'll pass DATABASE_URL in connect() instead of __init__
-client = TelegramClient("bot_session", API_ID, API_HASH)
+# --------------------------
+# DATABASE
+# --------------------------
+db = Database()
 
-# -------------------------------
-# Example handlers
-# -------------------------------
+# --------------------------
+# TELEGRAM CLIENT
+# --------------------------
+client = TelegramClient('bot_session', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
+
+# --------------------------
+# HANDLERS
+# --------------------------
 @client.on(events.NewMessage)
-async def on_new_message(event):
-    chat_id = event.chat_id
-    sender_id = event.sender_id
+async def handle_new_message(event):
+    sender = await event.get_sender()
+    chat = await event.get_chat()
     message = event.message.message
 
-    # Example: simple echo
-    if message.startswith("/echo "):
-        await event.reply(message[6:])
+    sender_id = sender.id
+    chat_id = chat.id
 
-    # TODO: call your game/raffle handlers here
-    # Example:
-    # await handle_qa_game(sender_id, chat_id, message)
-    # await handle_raffle(sender_id, chat_id, message)
+    if message.startswith("/raffle"):
+        await handle_raffle_command(chat_id, sender_id, message)
 
-# -------------------------------
-# Main function
-# -------------------------------
+
+async def handle_raffle_command(chat_id, sender_id, message):
+    await client.send_message(chat_id, "🎉 Raffle is being processed...")
+    await asyncio.sleep(1)
+    await client.send_message(chat_id, "🎲 Picking winner...")
+    await asyncio.sleep(1)
+    await client.send_message(chat_id, "🏆 Winner: @example_user")
+
+
+# --------------------------
+# SIMPLE WEB SERVER TO KEEP RENDER HAPPY
+# --------------------------
+async def handle_root(request):
+    return web.Response(text="Bot is running!")
+
+async def start_web_app():
+    app = web.Application()
+    app.router.add_get("/", handle_root)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', PORT)
+    await site.start()
+    print(f"Web service listening on port {PORT}")
+
+
+# --------------------------
+# MAIN FUNCTION
+# --------------------------
 async def main():
-    # Connect to the database
+    print(f"DATABASE_URL: {DATABASE_URL}")
     try:
         await db.connect(DATABASE_URL)
         print("Database connected ✅")
     except Exception as e:
-        print("Database connection failed ❌:", e)
+        print(f"Database connection failed ❌: {e}")
 
-    # Start Telegram bot
-    await client.start(bot_token=BOT_TOKEN)
-    print("Telegram client started")
-    print("Bot is now running...")
+    await start_web_app()       # Keeps Render happy
+    await client.run_until_disconnected()  # Runs Telegram client
 
-    # Keep the bot running
-    await client.run_until_disconnected()
 
-# -------------------------------
-# Entry point
-# -------------------------------
-if __name__ == "__main__":
-    # Create a single event loop for everything
-    loop = asyncio.get_event_loop()
-    try:
-        loop.run_until_complete(main())
-    finally:
-        loop.run_until_complete(client.disconnect())
-        loop.close()
-    print("Telegram client started")
-    await client.run_until_disconnected()
-
-# Entry point
+# --------------------------
+# ENTRY POINT
+# --------------------------
 if __name__ == "__main__":
     asyncio.run(main())
