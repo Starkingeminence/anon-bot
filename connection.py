@@ -1,40 +1,16 @@
-# connection.py
-import asyncpg
 import os
-import logging
-
-logger = logging.getLogger(__name__)
-
-DATABASE_URL = os.getenv("DATABASE_URL")  # uses environment variable
+import asyncpg
 
 class Database:
     def __init__(self):
         self.pool = None
+        self.url = os.getenv("DATABASE_URL")  # <- read from Render env
 
     async def connect(self):
         try:
-            self.pool = await asyncpg.create_pool(
-                DATABASE_URL,
-                min_size=1,
-                max_size=10,
-                ssl=True  # required for Supabase
-            )
-            logger.info("Database connected successfully ✅")
+            self.pool = await asyncpg.create_pool(self.url)
+            print("Database connected ✅")
         except Exception as e:
-            logger.error(f"Database connection failed ❌: {e}")
-            raise
+            print("Database connection failed ❌:", e)
 
-    async def fetch(self, query, *args):
-        async with self.pool.acquire() as conn:
-            return await conn.fetch(query, *args)
-
-    async def fetchrow(self, query, *args):
-        async with self.pool.acquire() as conn:
-            return await conn.fetchrow(query, *args)
-
-    async def execute(self, query, *args):
-        async with self.pool.acquire() as conn:
-            return await conn.execute(query, *args)
-
-# Singleton instance
-db = Database()
+print("DATABASE_URL:", os.getenv("DATABASE_URL"))
