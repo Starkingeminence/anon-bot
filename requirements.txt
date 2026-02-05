@@ -4,3 +4,4 @@ python-dotenv>=1.0.0
 langdetect>=1.0.9
 emoji>=2.0.0
 pandas>=2.0.0
+aiohttp
