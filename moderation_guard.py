@@ -6,9 +6,9 @@ Feb 2026
 
 Responsibilities:
 - Anti-spam & anti-link
-- Enforcement rules for mute/warn/ban
+- Escalation logic (warn → mute → ban)
 - Admin protection from being moderated by other admins
-- Reason logging for transparency and auditing
+- Reason required for all moderation actions
 - /status command reporting with date & time
 """
 
@@ -26,7 +26,7 @@ SPAM_THRESHOLD = 5
 SPAM_WINDOW = timedelta(hours=1)
 
 # -----------------------------
-# IN-MEMORY CACHE (OPTIONAL)
+# IN-MEMORY CACHE
 # -----------------------------
 recent_messages = {}  # (group_id, user_id, msg_hash) -> (first_seen, count)
 penalties = {}        # (group_id, user_id) -> {"level": 0=none,1=warn,2=mute,3=ban, "reason": str, "timestamp": datetime}
@@ -47,7 +47,7 @@ def is_forwarded(message) -> bool:
     return bool(message.forward_from or message.forward_from_chat)
 
 # -----------------------------
-# MODERATION LOGIC
+# ANTI-SPAM / ANTI-LINK LOGIC
 # -----------------------------
 async def check_hard_violation(message) -> str | None:
     """Return reason if link or forwarded message detected."""
@@ -58,7 +58,10 @@ async def check_hard_violation(message) -> str | None:
     return None
 
 async def check_soft_spam(message, group_id: int, user_id: int) -> bool:
-    """Return True if repeated message exceeds threshold."""
+    """
+    Return True if repeated message exceeds threshold.
+    Applies to normal messages, optionally to anonymous messages.
+    """
     msg_hash = hash_message(message.text)
     now = datetime.utcnow()
     key = (group_id, user_id, msg_hash)
@@ -72,6 +75,9 @@ async def check_soft_spam(message, group_id: int, user_id: int) -> bool:
         recent_messages[key] = (now, 1)
         return False
 
+# -----------------------------
+# ESCALATION LOGIC
+# -----------------------------
 async def escalate_penalty(group_id: int, user_id: int, reason: str) -> int:
     """
     Increase penalty level: 1=warn, 2=mute, 3=ban. Requires reason.
@@ -99,7 +105,7 @@ async def can_moderate(admin_user, target_user, is_owner=False):
     return True, None
 
 # -----------------------------
-# COMMAND HANDLERS
+# MODERATION ACTION HANDLER
 # -----------------------------
 async def enforce_action(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, target_user, reason: str, is_owner=False):
     """
@@ -110,6 +116,49 @@ async def enforce_action(update: Update, context: ContextTypes.DEFAULT_TYPE, act
     if not can_act:
         await update.message.reply_text(msg)
         return
+
+    if not reason:
+        await update.message.reply_text("❌ You must provide a reason for this action.")
+        return
+
+    # Escalate penalty
+    level = await escalate_penalty(update.effective_chat.id, target_user.id, reason)
+
+    # Notify group
+    await update.message.reply_text(
+        f"✅ {action.capitalize()} applied to {target_user.first_name}.\n"
+        f"Reason: {reason}\n"
+        f"Current penalty level: {level}\n"
+        f"Date/Time: {penalties[(update.effective_chat.id, target_user.id)]['timestamp'].strftime('%Y-%m-%d %H:%M:%S UTC')}"
+    )
+
+# -----------------------------
+# STATUS COMMAND
+# -----------------------------
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user):
+    """
+    Shows whether a user is muted/banned and reason, including date & time. No IDs shown.
+    """
+    key = (update.effective_chat.id, target_user.id)
+    info = penalties.get(key)
+    if not info:
+        status = "Active"
+        reason = "None"
+        timestamp = "N/A"
+    else:
+        level_map = {1: "Warned", 2: "Muted", 3: "Banned"}
+        status = level_map.get(info["level"], "Active")
+        reason = info.get("reason", "None")
+        timestamp = info.get("timestamp")
+        if timestamp:
+            timestamp = timestamp.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    await update.message.reply_text(
+        f"Status for {target_user.first_name}:\n"
+        f"State: {status}\n"
+        f"Reason: {reason}\n"
+        f"Date/Time: {timestamp}"
+    )        return
 
     if not reason:
         await update.message.reply_text("❌ You must provide a reason for this action.")
