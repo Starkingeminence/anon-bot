@@ -158,6 +158,55 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE, tar
         f"State: {status}\n"
         f"Reason: {reason}\n"
         f"Date/Time: {timestamp}"
+    )    Enforce moderation action on a user.
+    action: 'warn', 'mute', 'ban'
+    """
+    can_act, msg = await can_moderate(update.effective_user, target_user, is_owner)
+    if not can_act:
+        await update.message.reply_text(msg)
+        return
+
+    if not reason:
+        await update.message.reply_text("❌ You must provide a reason for this action.")
+        return
+
+    # Escalate penalty
+    level = await escalate_penalty(update.effective_chat.id, target_user.id, reason)
+
+    # Notify group
+    await update.message.reply_text(
+        f"✅ {action.capitalize()} applied to {target_user.first_name}.\n"
+        f"Reason: {reason}\n"
+        f"Current penalty level: {level}\n"
+        f"Date/Time: {penalties[(update.effective_chat.id, target_user.id)]['timestamp'].strftime('%Y-%m-%d %H:%M:%S UTC')}"
+    )
+
+# -----------------------------
+# STATUS COMMAND
+# -----------------------------
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user):
+    """
+    Shows whether a user is muted/banned and reason, including date & time. No IDs shown.
+    """
+    key = (update.effective_chat.id, target_user.id)
+    info = penalties.get(key)
+    if not info:
+        status = "Active"
+        reason = "None"
+        timestamp = "N/A"
+    else:
+        level_map = {1: "Warned", 2: "Muted", 3: "Banned"}
+        status = level_map.get(info["level"], "Active")
+        reason = info.get("reason", "None")
+        timestamp = info.get("timestamp")
+        if timestamp:
+            timestamp = timestamp.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    await update.message.reply_text(
+        f"Status for {target_user.first_name}:\n"
+        f"State: {status}\n"
+        f"Reason: {reason}\n"
+        f"Date/Time: {timestamp}"
     )        return
 
     if not reason:
