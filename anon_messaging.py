@@ -6,12 +6,12 @@ Responsibilities:
 - Forward DM messages anonymously to that group
 - Confirm destination group after sending
 - Allow admins to trace anonymous messages
+- Show currently connected group (/current_group)
 """
 
 import asyncpg
 import logging
 from telethon import events
-from telethon.tl.types import Message
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +97,7 @@ class AnonymousMessaging:
 
             return True, f"✅ Sent anonymously to **{group.title}**"
 
-        except Exception as e:
+        except Exception:
             logger.exception("Anonymous send failed")
             return False, "❌ Failed to send anonymous message."
 
@@ -110,6 +110,81 @@ class AnonymousMessaging:
                 WHERE group_id = $1 AND message_id = $2
             """, group_id, message_id)
 
+        return row["user_id"] if row else None
+
+    # -------------------- HANDLERS --------------------
+
+    def register_handlers(self):
+
+        # DM text handler (anonymous messages)
+        @self.client.on(events.NewMessage(incoming=True, private=True))
+        async def anon_dm_handler(event):
+            if event.text.startswith("/"):
+                return
+
+            success, reply = await self.send_anonymous(
+                event.sender_id,
+                event.text
+            )
+            await event.reply(reply)
+
+        # /start deep-link handler
+        @self.client.on(events.NewMessage(pattern=r"^/start (\-?\d+)$"))
+        async def start_handler(event):
+            if not event.is_private:
+                return
+
+            group_id = int(event.pattern_match.group(1))
+            await self.link_user(event.sender_id, group_id)
+
+            await event.reply(
+                "🕶 **Anonymous Messaging Enabled**\n\n"
+                "Messages you send here will be forwarded anonymously.\n"
+                "Admins can trace abuse.\n\n"
+                "📌 Tip: Pin this chat for quick access."
+            )
+
+        # /current_group (private only)
+        @self.client.on(events.NewMessage(pattern="^/current_group$"))
+        async def current_group_handler(event):
+            if not event.is_private:
+                return
+
+            group_id = await self.get_linked_group(event.sender_id)
+            if not group_id:
+                await event.reply(
+                    "❌ You are not connected to any group.\n"
+                    "Ask an admin for the anonymous link."
+                )
+                return
+
+            try:
+                group = await self.client.get_entity(group_id)
+                await event.reply(
+                    f"🔗 You are currently connected to:\n"
+                    f"**{group.title}**"
+                )
+            except Exception:
+                await event.reply(
+                    "⚠️ You are connected to a group, but I can’t access its details."
+                )
+
+        # /trace (admins only – permission checks handled elsewhere)
+        @self.client.on(events.NewMessage(pattern="^/trace$"))
+        async def trace_handler(event):
+            if not event.reply_to_msg_id:
+                return
+
+            sender = await self.trace_message(
+                event.chat_id,
+                event.reply_to_msg_id
+            )
+
+            if sender:
+                await event.reply(
+                    f"🕵️ [User Profile](tg://user?id={sender})",
+                    parse_mode="md"
+                )
         return row["user_id"] if row else None
 
     # -------------------- HANDLERS --------------------
