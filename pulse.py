@@ -9,8 +9,7 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     ContextTypes,
-    filters,
-    ChatMemberHandler
+    filters
 )
 
 # ==============================
@@ -23,29 +22,23 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 # Redis setup
 # ==============================
 r = redis.Redis(host='localhost', port=6379, db=0)
-
 WEEK_SECONDS = 7 * 24 * 60 * 60
-
 
 # ==============================
 # Utility Functions
 # ==============================
-
 def week_key(chat_id, key_type):
     return f"pulse:{chat_id}:{key_type}"
-
 
 def add_unique(chat_id, key_type, user_id):
     key = week_key(chat_id, key_type)
     r.sadd(key, user_id)
     r.expire(key, WEEK_SECONDS)
 
-
 def increment_counter(chat_id, key_type):
     key = week_key(chat_id, key_type)
     r.incr(key)
     r.expire(key, WEEK_SECONDS)
-
 
 def mark_active_day(chat_id):
     today = datetime.date.today().isoformat()
@@ -53,16 +46,13 @@ def mark_active_day(chat_id):
     r.sadd(key, today)
     r.expire(key, WEEK_SECONDS)
 
-
 def get_weekly_data(chat_id):
     A_msg = r.scard(week_key(chat_id, "msg_users"))
     A_react = r.scard(week_key(chat_id, "react_users"))
     A_poll = r.scard(week_key(chat_id, "poll_users"))
     M = int(r.get(week_key(chat_id, "message_count")) or 0)
     active_days = r.scard(week_key(chat_id, "active_days"))
-
     return A_msg, A_react, A_poll, M, active_days
-
 
 def calculate_pulse(G, A_msg, A_react, A_poll, M, active_days):
     effective_active = A_msg + (0.5 * A_react) + (0.5 * A_poll)
@@ -75,6 +65,8 @@ def calculate_pulse(G, A_msg, A_react, A_poll, M, active_days):
         engagement_factor = min(
             max(math.log2(1 + (M / A_msg)) / math.log2(6), 0), 1
         )
+        if (M / A_msg) < 2:
+            engagement_factor = max(engagement_factor - 0.2, 0)
 
     consistency = active_days / 7
 
@@ -86,75 +78,69 @@ def calculate_pulse(G, A_msg, A_react, A_poll, M, active_days):
 
     return round(pulse_score, 2)
 
-
-def get_verdict(score):
+def get_verdict(score, total_messages):
+    if total_messages == 0:
+        return "⚫ Inactive"
     if score >= 60:
         return "🟢 Strong"
     elif score >= 40:
         return "🟡 Normal"
     elif score >= 20:
         return "🟠 Weak"
-    else:
-        return "⚫ Dead"
-
+    return "🔵 Faint"
 
 # ==============================
 # Handlers
 # ==============================
-
 async def track_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.is_bot:
         return
-
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
-
+    # Only count non-command messages
+    if update.message.text and update.message.text.startswith("/"):
+        return
     add_unique(chat_id, "msg_users", user_id)
     increment_counter(chat_id, "message_count")
     mark_active_day(chat_id)
 
-
 async def track_reactions(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message_reaction:
+    if hasattr(update, "message_reaction") and update.message_reaction:
         user = update.message_reaction.user
         if user and not user.is_bot:
             chat_id = update.effective_chat.id
             add_unique(chat_id, "react_users", user.id)
             mark_active_day(chat_id)
 
-
 async def track_polls(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.poll_answer:
+    if hasattr(update, "poll_answer") and update.poll_answer:
         user = update.poll_answer.user
         if not user.is_bot:
             chat_id = update.effective_chat.id
             add_unique(chat_id, "poll_users", user.id)
             mark_active_day(chat_id)
 
-
 async def pulse(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    chat_id = chat.id
+    chat_id = update.effective_chat.id
 
-    # 7-day cooldown check
+    # 7-day cooldown
     cooldown_key = week_key(chat_id, "last_pulse")
-    last_used = r.get(cooldown_key)
-
-    if last_used:
-        await update.message.reply_text(
-            "⏳ Pulse can only be used once every 7 days."
-        )
+    if r.get(cooldown_key):
+        await update.message.reply_text("⏳ Pulse can only be used once every 7 days.")
         return
 
+    # Get data
     G = await context.bot.get_chat_member_count(chat_id)
-
     A_msg, A_react, A_poll, M, active_days = get_weekly_data(chat_id)
 
+    # Calculate score & verdict
     score = calculate_pulse(G, A_msg, A_react, A_poll, M, active_days)
-    verdict = get_verdict(score)
+    verdict = get_verdict(score, M)
 
+    # Set cooldown
     r.setex(cooldown_key, WEEK_SECONDS, 1)
 
+    # Send report
     await update.message.reply_text(
         f"📊 Pulse Report\n\n"
         f"Score: {score}/100\n"
@@ -167,22 +153,19 @@ async def pulse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Active Days: {active_days}/7"
     )
 
-
 # ==============================
 # Main App
 # ==============================
-
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, track_messages))
     app.add_handler(MessageHandler(filters.ALL, track_reactions))
-    app.add_handler(CommandHandler("pulse", pulse))
     app.add_handler(MessageHandler(filters.POLL_ANSWER, track_polls))
+    app.add_handler(CommandHandler("pulse", pulse))
 
     print("Bot running...")
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
