@@ -1,96 +1,187 @@
-# utils.py
 import re
 import unicodedata
 import logging
 from datetime import datetime, timedelta
 from typing import List, Optional
+
 from telethon import TelegramClient, Button
 
 logger = logging.getLogger(__name__)
 
-# ==========================
-# TEXT HELPERS
-# ==========================
+# ==========================================================
+# TEXT UTILITIES
+# ==========================================================
 
 def normalize_text(text: str) -> str:
-    """Normalize text: remove accents, lowercase, strip spaces."""
+    """
+    Normalize text by:
+    - Removing accents
+    - Converting to lowercase
+    - Stripping spaces
+    """
     if not text:
         return ""
+
     text = unicodedata.normalize("NFKD", text)
     text = text.encode("ascii", "ignore").decode("utf-8")
-    text = text.lower().strip()
-    return text
+    return text.lower().strip()
+
 
 def remove_emojis(text: str) -> str:
-    """Remove emojis from a string."""
+    """
+    Remove emojis from text.
+    """
     emoji_pattern = re.compile(
         "["
-        "\U0001F600-\U0001F64F"  # emoticons
-        "\U0001F300-\U0001F5FF"  # symbols & pictographs
-        "\U0001F680-\U0001F6FF"  # transport & map symbols
-        "\U0001F1E0-\U0001F1FF"  # flags
+        "\U0001F600-\U0001F64F"
+        "\U0001F300-\U0001F5FF"
+        "\U0001F680-\U0001F6FF"
+        "\U0001F1E0-\U0001F1FF"
         "\U00002700-\U000027BF"
         "\U000024C2-\U0001F251"
         "]+",
         flags=re.UNICODE,
     )
-    return emoji_pattern.sub(r"", text)
+    return emoji_pattern.sub("", text)
+
 
 def remove_links(text: str) -> str:
-    """Remove URLs from a string."""
-    url_pattern = re.compile(r"https?://\S+|www\.\S+")
-    return url_pattern.sub(r"", text)
+    """
+    Remove URLs from text.
+    """
+    url_pattern = re.compile(r"http\S+|www\S+")
+    return url_pattern.sub("", text)
 
-def shorten_text(text: str, max_length: int = 50) -> str:
-    """Shorten text with ellipsis if longer than max_length."""
-    if len(text) <= max_length:
-        return text
-    return text[: max_length - 3] + "..."
 
-# ==========================
-# TIME HELPERS
-# ==========================
+# ==========================================================
+# TIME UTILITIES
+# ==========================================================
 
 def now_utc() -> datetime:
+    """
+    Return current UTC time.
+    """
     return datetime.utcnow()
 
-def format_seconds(seconds: int) -> str:
-    """Convert seconds to 1h 1m 1s format."""
-    hours, remainder = divmod(seconds, 3600)
-    minutes, secs = divmod(remainder, 60)
-    parts = []
-    if hours: parts.append(f"{hours}h")
-    if minutes: parts.append(f"{minutes}m")
-    if secs or not parts: parts.append(f"{secs}s")
-    return " ".join(parts)
 
-def format_timedelta(td: timedelta) -> str:
-    return format_seconds(int(td.total_seconds()))
+def days_ago(days: int) -> datetime:
+    """
+    Return datetime for X days ago.
+    """
+    return now_utc() - timedelta(days=days)
 
-def seconds_until(future_time: datetime) -> int:
-    delta = future_time - now_utc()
+
+def format_datetime(dt: datetime) -> str:
+    """
+    Format datetime for display.
+    """
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def seconds_until(target_time: datetime) -> int:
+    """
+    Returns number of seconds until target_time.
+    """
+    delta = target_time - now_utc()
     return max(int(delta.total_seconds()), 0)
 
-# ==========================
-# TELEGRAM HELPERS
-# ==========================
 
-async def send_dm(bot: TelegramClient, user_id: int, message: str, buttons: Optional[List[Button]] = None):
+# ==========================================================
+# TELEGRAM UTILITIES (Telethon-based)
+# ==========================================================
+
+async def send_dm(
+    bot: TelegramClient,
+    user_id: int,
+    message: str,
+    buttons: Optional[List[Button]] = None
+):
+    """
+    Send private message to a user.
+    """
     try:
-        await bot.send_message(user_id, message, buttons=buttons)
+        if buttons:
+            await bot.send_message(user_id, message, buttons=buttons)
+        else:
+            await bot.send_message(user_id, message)
+
         logger.info(f"Sent DM to {user_id}")
+
     except Exception as e:
         logger.error(f"Failed to send DM to {user_id}: {e}")
 
-async def send_group_message(bot: TelegramClient, group_id: int, message: str, buttons: Optional[List[Button]] = None):
+
+async def send_group_message(
+    bot: TelegramClient,
+    group_id: int,
+    message: str,
+    buttons: Optional[List[Button]] = None
+):
+    """
+    Send message to group or channel.
+    """
     try:
-        await bot.send_message(group_id, message, buttons=buttons)
+        if buttons:
+            await bot.send_message(group_id, message, buttons=buttons)
+        else:
+            await bot.send_message(group_id, message)
+
         logger.info(f"Sent message to group {group_id}")
+
     except Exception as e:
         logger.error(f"Failed to send message to group {group_id}: {e}")
 
-async def delete_message(bot: TelegramClient, chat_id: int, message_id: int):
+
+async def send_buttons(
+    bot: TelegramClient,
+    chat_id: int,
+    message: str,
+    button_list: List[List[Button]]
+):
+    """
+    Send message with inline buttons arranged in rows.
+    """
+    try:
+        await bot.send_message(chat_id, message, buttons=button_list)
+        logger.info(f"Sent buttons to {chat_id}")
+
+    except Exception as e:
+        logger.error(f"Failed to send buttons to {chat_id}: {e}")
+
+
+async def edit_message(
+    bot: TelegramClient,
+    chat_id: int,
+    message_id: int,
+    new_text: str,
+    buttons: Optional[List[Button]] = None
+):
+    """
+    Edit a previously sent message.
+    """
+    try:
+        if buttons:
+            await bot.edit_message(chat_id, message_id, text=new_text, buttons=buttons)
+        else:
+            await bot.edit_message(chat_id, message_id, text=new_text)
+
+        logger.info(f"Edited message {message_id} in chat {chat_id}")
+
+    except Exception as e:
+        logger.error(f"Failed to edit message {message_id} in chat {chat_id}: {e}")
+
+
+async def delete_message(
+    bot: TelegramClient,
+    chat_id: int,
+    message_id: int
+):
+    """
+    Delete message from chat.
+    """
     try:
         await bot.delete_messages(chat_id, message_id)
+        logger.info(f"Deleted message {message_id} in chat {chat_id}")
+
     except Exception as e:
-        logger.error(f"Failed to delete message {message_id}: {e}")
+        logger.error(f"Failed to delete message {message_id} in chat {chat_id}: {e}")
