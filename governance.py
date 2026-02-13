@@ -1,99 +1,152 @@
-# governance.py
-import logging
+"""
+Governance Module
+Eminence DAO Bot
+Feb 2026
+
+Responsibilities:
+- Create decisions
+- Cast votes with weight
+- Editable until expiry
+- Immutable record after expiry
+- Audit-safe weighted results
+"""
+
+import asyncio
 from datetime import datetime, timedelta
-from connection import db
+from db.connection import db  # assumes asyncpg wrapper
 
-logger = logging.getLogger(__name__)
-
-# ==========================
-# ADMIN WEIGHTS
-# ==========================
-
-async def get_admin_weights(group_id: int):
-    """Calculates voting weight: Owner 50%, Admins share remaining 50%."""
-    # Fetch all admins
-    all_admins_rows = await db.fetch("SELECT user_id FROM permissions WHERE group_id = $1 AND role = 'admin'", group_id)
-    all_admins = [row["user_id"] for row in all_admins_rows]
-
-    # Fetch owner
-    owner_row = await db.fetchrow("SELECT user_id FROM permissions WHERE group_id = $1 AND role = 'owner'", group_id)
-    owner_id = owner_row["user_id"] if owner_row else None
-
-    weights = {}
-
-    # Scenario: No owner, equal split
-    if owner_id is None:
-        if not all_admins: return weights
-        equal_weight = 1 / len(all_admins)
-        for admin in all_admins: weights[admin] = equal_weight
-        return weights
-
-    # Scenario: Owner exists
-    weights[owner_id] = 1.0 if not all_admins else 0.5
-    
-    if all_admins:
-        per_admin_weight = 0.5 / len(all_admins)
-        for admin in all_admins:
-            weights[admin] = per_admin_weight
-
-    return weights
-
-# ==========================
-# ADMIN VOTING (In-Memory)
-# ==========================
-
-votes_cast = {} # {decision_id: {admin_id: vote_value}}
-
-async def create_vote(decision_id: int, admin_ids: list):
-    votes_cast[decision_id] = {admin_id: None for admin_id in admin_ids}
-    logger.info(f"Vote created for decision {decision_id}")
-
-async def handle_vote(decision_id: int, admin_id: int, vote_value: str):
-    if decision_id not in votes_cast or admin_id not in votes_cast[decision_id]:
-        return False
-    votes_cast[decision_id][admin_id] = vote_value
-    return True
-
-def count_votes(decision_id: int) -> dict:
-    if decision_id not in votes_cast: return {}
-    result = {}
-    for vote in votes_cast[decision_id].values():
-        if vote: result[vote] = result.get(vote, 0) + 1
-    return result
-
-# ==========================
-# PERSONAL VOTES (Database)
-# ==========================
-
-async def create_personal_vote(creator_id: int, topic: str, options: list, duration_seconds: int = 3600):
-    query = """
-        INSERT INTO personal_votes (creator_id, topic, options, duration, created_at, is_active)
-        VALUES ($1, $2, $3, $4, $5, TRUE) RETURNING id
+# -----------------------------
+# DECISION MANAGEMENT
+# -----------------------------
+async def create_decision(title: str, description: str, expires_in_hours: int = 72):
     """
-    row = await db.fetchrow(query, creator_id, topic, options, duration_seconds, datetime.utcnow())
-    return row["id"] if row else None
-
-async def cast_personal_vote(vote_id: int, voter_id: int, selected_option: str):
-    vote = await db.fetchrow("SELECT * FROM personal_votes WHERE id = $1", vote_id)
-    if not vote or not vote["is_active"]: return False
+    Create a new governance decision.
+    Status = active
+    Expires_at = now + expires_in_hours
+    """
+    expires_at = datetime.utcnow() + timedelta(hours=expires_in_hours)
 
     query = """
-        INSERT INTO personal_vote_results (personal_vote_id, voter_id, selected_option, voted_at)
-        VALUES ($1, $2, $3, $4)
-        ON CONFLICT (personal_vote_id, voter_id)
-        DO UPDATE SET selected_option = EXCLUDED.selected_option, voted_at = EXCLUDED.voted_at
+        INSERT INTO governance_decisions
+        (title, description, status, created_at, expires_at)
+        VALUES ($1, $2, 'active', NOW(), $3)
+        RETURNING id
     """
-    await db.execute(query, vote_id, voter_id, selected_option, datetime.utcnow())
-    return True
+    decision_id = await db.fetchval(query, title, description, expires_at)
+    return decision_id
 
-async def get_personal_vote_results(vote_id: int):
-    vote = await db.fetchrow("SELECT options FROM personal_votes WHERE id = $1", vote_id)
-    if not vote: return None
-    results = await db.fetch("SELECT selected_option FROM personal_vote_results WHERE personal_vote_id = $1", vote_id)
-    
-    tally = {opt: 0 for opt in vote["options"]}
-    for row in results:
-        if row["selected_option"] in tally:
-            tally[row["selected_option"]] += 1
-    return tally
+# -----------------------------
+# VOTE CASTING
+# -----------------------------
+async def cast_vote(decision_id: int, voter_id: int, vote_value: str, weight: float):
+    """
+    Cast or update a vote.
+    Editable only while decision is active and before expiry.
+    """
+    decision = await db.fetchrow(
+        "SELECT status, expires_at FROM governance_decisions WHERE id = $1",
+        decision_id
+    )
 
+    if not decision:
+        return False, "Decision not found."
+
+    if decision["status"] != "active":
+        return False, "Decision is closed."
+
+    if decision["expires_at"] and decision["expires_at"] < datetime.utcnow():
+        return False, "Decision expired."
+
+    query = """
+        INSERT INTO governance_votes
+        (decision_id, voter_id, vote_value, weight, voted_at)
+        VALUES ($1, $2, $3, $4, NOW())
+        ON CONFLICT (decision_id, voter_id)
+        DO UPDATE SET
+            vote_value = EXCLUDED.vote_value,
+            weight = EXCLUDED.weight,
+            voted_at = NOW()
+    """
+
+    await db.execute(query, decision_id, voter_id, vote_value, weight)
+    return True, "Vote cast successfully."
+
+# -----------------------------
+# EXPIRE DECISIONS (LOCK)
+# -----------------------------
+async def expire_governance_decisions():
+    """
+    Mark active decisions past their expiry as closed.
+    Returns list of expired decision IDs.
+    """
+    now = datetime.utcnow()
+    query = """
+        UPDATE governance_decisions
+        SET status = 'closed'
+        WHERE status = 'active'
+        AND expires_at < $1
+        RETURNING id
+    """
+    expired = await db.fetch(query, now)
+    return [row["id"] for row in expired]
+
+# -----------------------------
+# GET RESULTS
+# -----------------------------
+async def get_decision_results(decision_id: int):
+    """
+    Returns weighted vote tally for a decision.
+    Vote weights are immutable (stored at vote time)
+    """
+    query = """
+        SELECT vote_value, SUM(weight) AS total_weight
+        FROM governance_votes
+        WHERE decision_id = $1
+        GROUP BY vote_value
+    """
+    rows = await db.fetch(query, decision_id)
+    return {row["vote_value"]: float(row["total_weight"]) for row in rows}
+
+# -----------------------------
+# CHECK VOTER STATUS
+# -----------------------------
+async def has_voted(decision_id: int, voter_id: int):
+    """
+    Returns True if the voter has cast a vote for the given decision
+    """
+    row = await db.fetchrow(
+        "SELECT 1 FROM governance_votes WHERE decision_id=$1 AND voter_id=$2",
+        decision_id, voter_id
+    )
+    return bool(row)
+
+# -----------------------------
+# AUTO-LOCKER BACKGROUND TASK
+# -----------------------------
+async def governance_expiry_scheduler(interval_sec: int = 60):
+    """
+    Background task to periodically expire decisions
+    """
+    while True:
+        expired_ids = await expire_governance_decisions()
+        if expired_ids:
+            print(f"Expired decisions: {expired_ids}")
+        await asyncio.sleep(interval_sec)
+
+# -----------------------------
+# UTILITIES
+# -----------------------------
+async def get_active_decisions():
+    return await db.fetch("SELECT * FROM governance_decisions WHERE status='active'")
+
+async def get_closed_decisions():
+    return await db.fetch("SELECT * FROM governance_decisions WHERE status='closed'")
+
+async def get_decision(decision_id: int):
+    return await db.fetchrow("SELECT * FROM governance_decisions WHERE id=$1", decision_id)
+
+async def get_votes(decision_id: int):
+    return await db.fetch(
+        "SELECT voter_id, vote_value, weight, voted_at FROM governance_votes WHERE decision_id=$1",
+        decision_id
+    )
