@@ -1,111 +1,122 @@
-# games.py
-import logging
-from users import add_user, get_user  # Assumes users.py exists
+"""
+Games Module for Eminence DAO Bot
+Merged: fastest_fingers.py, qa.py, leaderboard.py
 
-logger = logging.getLogger(__name__)
+Responsibilities:
+- Q&A / MCQ games
+- Fastest finger challenges
+- Leaderboards and point tracking
+"""
 
-# ==========================
-# STATE STORAGE
-# ==========================
-# Stores game state: {group_id: {...}}
-fastest_fingers_games = {} 
-qa_games = {}
+from users import add_user, get_user
+import asyncio
 
-# ==========================
-# FASTEST FINGERS LOGIC
-# ==========================
+# -----------------------------
+# Leaderboard storage
+# -----------------------------
+leaderboards = {}  # {group_id: {user_id: points}}
 
-async def handle_fastest_fingers(group_id: int, user_id: int, username: str = None):
+# -----------------------------
+# Q&A / MCQ Game storage
+# -----------------------------
+qa_games = {}  # {group_id: {"questions": [], "players_answers": {}, "finished": False}}
+
+async def handle_qa_game(group_id: int, user_id: int, question_index: int, answer: str, username: str = None):
     """
-    Handles a user participating in Fastest Fingers.
-    Returns the updated game state.
+    Handles a user's answer in a Q&A/MCQ game.
     """
+    # Ensure the user exists
     await add_user(user_id, username)
 
-    # Initialize if missing
-    if group_id not in fastest_fingers_games:
-        fastest_fingers_games[group_id] = {
-            "winners": [],
-            "max_winners": 3
-        }
-
-    game = fastest_fingers_games[group_id]
-
-    # Add to winners if spots represent
-    if user_id not in game["winners"] and len(game["winners"]) < game["max_winners"]:
-        game["winners"].append(user_id)
-
-    return game
-
-async def reset_fastest_fingers(group_id: int):
-    fastest_fingers_games[group_id] = {"winners": [], "max_winners": 3}
-
-# ==========================
-# Q&A / MCQ LOGIC
-# ==========================
-
-async def handle_qa_game(group_id: int, user_id: int, q_index: int, answer: str, username: str = None):
-    """
-    Records a user's answer for a Q&A game.
-    """
-    await add_user(user_id, username)
-
+    # Initialize the game for the group if it doesn't exist
     if group_id not in qa_games:
         qa_games[group_id] = {
-            "questions": [],       # [{"q": "text", "a": "answer"}]
-            "players_answers": {}, # {(user_id, q_index): "answer"}
+            "questions": [],
+            "players_answers": {},
             "finished": False
         }
 
     game = qa_games[group_id]
-    game["players_answers"][(user_id, q_index)] = answer
+
+    # Record the player's answer
+    game["players_answers"][(user_id, question_index)] = answer
+
     return game
 
+
 async def reset_qa_game(group_id: int):
+    """
+    Resets the Q&A game for a group.
+    """
     qa_games[group_id] = {
         "questions": [],
         "players_answers": {},
         "finished": False
     }
 
-# ==========================
-# LEADERBOARD LOGIC
-# ==========================
+# -----------------------------
+# Fastest Finger Game storage
+# -----------------------------
+fastest_games = {}  # {group_id: {"question": str, "answer": str, "winner": user_id or None}}
 
-async def generate_leaderboard(group_id: int):
+async def start_fastest_game(group_id: int, question: str, answer: str):
     """
-    Calculates combined scores from Fastest Fingers and Q&A.
+    Starts a fastest finger game for a group.
     """
-    scores = {}
+    fastest_games[group_id] = {
+        "question": question,
+        "answer": answer.lower(),
+        "winner": None
+    }
 
-    # 1. Tally Fastest Fingers
-    ff_game = fastest_fingers_games.get(group_id)
-    if ff_game:
-        for idx, user_id in enumerate(ff_game["winners"]):
-            # Points: 1st=3, 2nd=2, 3rd=1
-            points = max(3 - idx, 1)
-            scores[user_id] = scores.get(user_id, 0) + points
+async def submit_fastest_answer(group_id: int, user_id: int, user_answer: str, username: str = None):
+    """
+    Submits an answer for the fastest finger game.
+    First correct answer is winner.
+    """
+    await add_user(user_id, username)
+    game = fastest_games.get(group_id)
+    if not game or game["winner"] is not None:
+        return False  # Game not active or already won
 
-    # 2. Tally Q&A
-    qa_game = qa_games.get(group_id)
-    if qa_game and qa_game.get("finished"):
-        for (user_id, q_idx), ans in qa_game["players_answers"].items():
-            # simple exact match check
-            correct_ans = qa_game["questions"][q_idx]["a"].lower()
-            if ans.lower() == correct_correct:
-                scores[user_id] = scores.get(user_id, 0) + 1
+    if user_answer.lower() == game["answer"]:
+        game["winner"] = user_id
+        # Award points on leaderboard
+        leaderboards.setdefault(group_id, {})
+        leaderboards[group_id][user_id] = leaderboards[group_id].get(user_id, 0) + 3  # Fastest correct points
+        return True
 
-    if not scores:
-        return "🏆 Leaderboard: No scores yet."
+    return False
 
-    # 3. Format Output
-    sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    text = "🏆 **Leaderboard**\n"
-    
-    for rank, (uid, pts) in enumerate(sorted_scores, 1):
-        user = await get_user(uid)
-        name = user["username"] if user and user["username"] else str(uid)
-        text += f"{rank}. @{name} — {pts} pts\n"
+async def end_fastest_game(group_id: int):
+    """
+    Ends the fastest finger game for a group.
+    """
+    fastest_games.pop(group_id, None)
 
-    return text
-      
+# -----------------------------
+# Leaderboard functions
+# -----------------------------
+
+def get_leaderboard(group_id: int, top_n: int = 10):
+    """
+    Returns top N users by points in a group.
+    """
+    group_board = leaderboards.get(group_id, {})
+    # Sort by points descending
+    sorted_board = sorted(group_board.items(), key=lambda x: x[1], reverse=True)
+    return sorted_board[:top_n]
+
+async def award_points(group_id: int, user_id: int, points: int, username: str = None):
+    """
+    Award points to a user on the leaderboard.
+    """
+    await add_user(user_id, username)
+    leaderboards.setdefault(group_id, {})
+    leaderboards[group_id][user_id] = leaderboards[group_id].get(user_id, 0) + points
+
+async def reset_leaderboard(group_id: int):
+    """
+    Resets the leaderboard for a group.
+    """
+    leaderboards[group_id] = {}
