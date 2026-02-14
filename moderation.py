@@ -226,3 +226,8 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text("✅ Report submitted. Moderators have been notified.")
+
+def register_moderation_handlers(app):
+    app.add_handler(CommandHandler("mute", mute))
+    app.add_handler(CommandHandler("ban", ban))
+    app.add_handler(MessageHandler(filters.ALL, moderation_guard))
