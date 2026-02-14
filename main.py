@@ -2,82 +2,90 @@ import os
 import asyncio
 import logging
 
-from telethon import TelegramClient, events
-from telethon.tl import functions
+from telegram.ext import ApplicationBuilder
 
-from connection import db  # Ensure your connection.py exposes `db` correctly
+from connection import db
 
-# ----------------------
-# Logging setup
-# ----------------------
+# Feature modules
+from utils import register_utils_handlers
+from economy import register_economy_handlers
+from governance import register_governance_handlers
+from games import register_games_handlers
+from moderation import register_moderation_handlers
+from analytics import (
+    register_analytics_handlers,
+    referral_scheduler,
+)
+
+# --------------------------------
+# Logging
+# --------------------------------
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ----------------------
-# Environment variables
-# ----------------------
+# --------------------------------
+# Environment Variables
+# --------------------------------
+
 DATABASE_URL = os.getenv("DATABASE_URL")
-API_ID = os.getenv("TELEGRAM_API_ID")
-API_HASH = os.getenv("TELEGRAM_API_HASH")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-WEB_PORT = int(os.getenv("PORT", 10000))  # Render default port
 
-if not all([DATABASE_URL, API_ID, API_HASH, BOT_TOKEN]):
-    logger.error("Missing one or more required environment variables!")
-    raise SystemExit("Check DATABASE_URL, TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_BOT_TOKEN")
+if not DATABASE_URL or not BOT_TOKEN:
+    raise SystemExit("Missing DATABASE_URL or TELEGRAM_BOT_TOKEN")
 
-# ----------------------
-# Telegram client
-# ----------------------
-client = TelegramClient("bot_session", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+# --------------------------------
+# Main
+# --------------------------------
 
-# ----------------------
-# Event handlers
-# ----------------------
-@client.on(events.NewMessage)
-async def on_new_message(event):
-    sender = await event.get_sender()
-    chat = await event.get_chat()
-    message = event.message.message
-
-    # Example: simple reply
-    await event.respond("Bot received your message!")
-
-    # TODO: call your game / raffle handlers here
-    # await handle_qa_game(sender.id, chat.id, message)
-
-# ----------------------
-# Main async entrypoint
-# ----------------------
 async def main():
-    logger.info(f"DATABASE_URL: {DATABASE_URL}")
 
-    # Connect to DB
+    # --------------------
+    # Connect Database
+    # --------------------
     try:
         await db.connect(DATABASE_URL)
         logger.info("Database connected ✅")
     except Exception as e:
         logger.error(f"Database connection failed ❌: {e}")
+        raise
 
-    # Start Telegram client
-    await client.start()
-    logger.info("Telegram client started")
+    # --------------------
+    # Build Bot App
+    # --------------------
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # If you have any background tasks, start them here
+    # --------------------
+    # Register Modules
+    # --------------------
+    register_utils_handlers(app)
+    register_economy_handlers(app)
+    register_governance_handlers(app)
+    register_games_handlers(app)
+    register_moderation_handlers(app)
+    register_analytics_handlers(app)
 
-    # Keep the bot running
-    await client.run_until_disconnected()
+    logger.info("All handlers registered ✅")
 
-# ----------------------
+    # --------------------
+    # Background Tasks
+    # --------------------
+    asyncio.create_task(referral_scheduler(app))
+    logger.info("Referral scheduler started (5 min loop)")
+
+    # --------------------
+    # Start Bot
+    # --------------------
+    logger.info("Bot starting...")
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+    await app.updater.idle()
+
+
+# --------------------------------
 # Entrypoint
-# ----------------------
+# --------------------------------
+
 if __name__ == "__main__":
-    # Handle Render’s event loop issues
-    try:
-        loop = asyncio.get_running_loop()
-        if loop.is_running():
-            asyncio.ensure_future(main())
-        else:
-            asyncio.run(main())
-    except RuntimeError:
-        asyncio.run(main())
+    asyncio.run(main())
