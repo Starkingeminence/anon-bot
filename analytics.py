@@ -357,3 +357,9 @@ def register_analytics_handlers(app):
 
     # Referral join tracking
     app.add_handler(ChatMemberHandler(track_joins, ChatMemberHandler.CHAT_MEMBER))
+
+def register_moderation_handlers(app):
+    app.add_handler(CommandHandler("mute", mute))
+    app.add_handler(CommandHandler("ban", ban))
+    app.add_handler(MessageHandler(filters.ALL, moderation_guard))
+
