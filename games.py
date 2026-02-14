@@ -120,3 +120,8 @@ async def reset_leaderboard(group_id: int):
     Resets the leaderboard for a group.
     """
     leaderboards[group_id] = {}
+
+def register_moderation_handlers(app):
+    app.add_handler(CommandHandler("mute", mute))
+    app.add_handler(CommandHandler("ban", ban))
+    app.add_handler(MessageHandler(filters.ALL, moderation_guard))
