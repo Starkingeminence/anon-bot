@@ -150,3 +150,8 @@ async def get_votes(decision_id: int):
         "SELECT voter_id, vote_value, weight, voted_at FROM governance_votes WHERE decision_id=$1",
         decision_id
     )
+
+def register_moderation_handlers(app):
+    app.add_handler(CommandHandler("mute", mute))
+    app.add_handler(CommandHandler("ban", ban))
+    app.add_handler(MessageHandler(filters.ALL, moderation_guard))
