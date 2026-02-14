@@ -266,3 +266,8 @@ async def expire_subscription(bot, group_id: int):
             )
         except Exception as e:
             logger.error(f"Failed to notify owner {owner_id}: {e}")
+
+def register_moderation_handlers(app):
+    app.add_handler(CommandHandler("mute", mute))
+    app.add_handler(CommandHandler("ban", ban))
+    app.add_handler(MessageHandler(filters.ALL, moderation_guard))
