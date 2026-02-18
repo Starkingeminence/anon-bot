@@ -6,122 +6,110 @@ Responsibilities:
 - Q&A / MCQ games
 - Fastest finger challenges
 - Leaderboards and point tracking
+- Privacy-safe: user IDs never exposed publicly
+- Cached leaderboards for performance
 """
 
 from users import add_user, get_user
+from connection import db
 import asyncio
+from datetime import datetime, timedelta
 
 # -----------------------------
-# Leaderboard storage
-# -----------------------------
-leaderboards = {}  # {group_id: {user_id: points}}
-
-# -----------------------------
-# Q&A / MCQ Game storage
+# In-memory game storage
 # -----------------------------
 qa_games = {}  # {group_id: {"questions": [], "players_answers": {}, "finished": False}}
-
-async def handle_qa_game(group_id: int, user_id: int, question_index: int, answer: str, username: str = None):
-    """
-    Handles a user's answer in a Q&A/MCQ game.
-    """
-    # Ensure the user exists
-    await add_user(user_id, username)
-
-    # Initialize the game for the group if it doesn't exist
-    if group_id not in qa_games:
-        qa_games[group_id] = {
-            "questions": [],
-            "players_answers": {},
-            "finished": False
-        }
-
-    game = qa_games[group_id]
-
-    # Record the player's answer
-    game["players_answers"][(user_id, question_index)] = answer
-
-    return game
-
-
-async def reset_qa_game(group_id: int):
-    """
-    Resets the Q&A game for a group.
-    """
-    qa_games[group_id] = {
-        "questions": [],
-        "players_answers": {},
-        "finished": False
-    }
-
-# -----------------------------
-# Fastest Finger Game storage
-# -----------------------------
 fastest_games = {}  # {group_id: {"question": str, "answer": str, "winner": user_id or None}}
 
+# -----------------------------
+# Leaderboard Cache
+# -----------------------------
+leaderboard_cache = {}  # {group_id: {"data": [...], "last_updated": datetime}}
+CACHE_EXPIRY_SECONDS = 30  # refresh every 30 seconds
+
+async def get_cached_leaderboard(group_id: int, top_n: int = 10):
+    now = datetime.utcnow()
+    cached = leaderboard_cache.get(group_id)
+    if cached:
+        age = (now - cached["last_updated"]).total_seconds()
+        if age < CACHE_EXPIRY_SECONDS:
+            return cached["data"]
+
+    leaderboard = await get_leaderboard_db(group_id, top_n)
+    leaderboard_cache[group_id] = {"data": leaderboard, "last_updated": now}
+    return leaderboard
+
+# -----------------------------
+# Q&A / MCQ Game Functions
+# -----------------------------
+async def handle_qa_game(group_id: int, user_id: int, question_index: int, answer: str, username: str = None):
+    await add_user(user_id, username)
+    if group_id not in qa_games:
+        qa_games[group_id] = {"questions": [], "players_answers": {}, "finished": False}
+    game = qa_games[group_id]
+
+    # Validate question index
+    if question_index < 0 or question_index >= len(game["questions"]):
+        raise IndexError("Question index out of range.")
+
+    # Record answer
+    game["players_answers"][(user_id, question_index)] = answer.strip()
+    return game
+
+async def reset_qa_game(group_id: int):
+    qa_games[group_id] = {"questions": [], "players_answers": {}, "finished": False}
+
+# -----------------------------
+# Fastest Finger Game Functions
+# -----------------------------
 async def start_fastest_game(group_id: int, question: str, answer: str):
-    """
-    Starts a fastest finger game for a group.
-    """
-    fastest_games[group_id] = {
-        "question": question,
-        "answer": answer.lower(),
-        "winner": None
-    }
+    fastest_games[group_id] = {"question": question, "answer": answer.strip().lower(), "winner": None}
 
 async def submit_fastest_answer(group_id: int, user_id: int, user_answer: str, username: str = None):
-    """
-    Submits an answer for the fastest finger game.
-    First correct answer is winner.
-    """
     await add_user(user_id, username)
     game = fastest_games.get(group_id)
     if not game or game["winner"] is not None:
-        return False  # Game not active or already won
-
-    if user_answer.lower() == game["answer"]:
+        return False
+    if user_answer.strip().lower() == game["answer"]:
         game["winner"] = user_id
-        # Award points on leaderboard
-        leaderboards.setdefault(group_id, {})
-        leaderboards[group_id][user_id] = leaderboards[group_id].get(user_id, 0) + 3  # Fastest correct points
+        await award_points_db(group_id, user_id, 3)  # award fastest correct points
         return True
-
     return False
 
 async def end_fastest_game(group_id: int):
-    """
-    Ends the fastest finger game for a group.
-    """
     fastest_games.pop(group_id, None)
 
 # -----------------------------
-# Leaderboard functions
+# Leaderboard Functions (DB-backed, privacy-safe)
 # -----------------------------
+async def award_points_db(group_id: int, user_id: int, points: int):
+    user = await get_user(user_id)
+    display_name = user.get("username") or user.get("full_name") or f"Player {user_id}"
+    query = """
+        INSERT INTO leaderboard (group_id, user_id, username, points)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (group_id, user_id)
+        DO UPDATE SET
+            points = leaderboard.points + $4,
+            username = EXCLUDED.username
+    """
+    await db.execute(query, group_id, user_id, display_name, points)
 
-def get_leaderboard(group_id: int, top_n: int = 10):
+async def get_leaderboard_db(group_id: int, top_n: int = 10):
+    query = """
+        SELECT user_id, username, points
+        FROM leaderboard
+        WHERE group_id = $1
+        ORDER BY points DESC
+        LIMIT $2
     """
-    Returns top N users by points in a group.
-    """
-    group_board = leaderboards.get(group_id, {})
-    # Sort by points descending
-    sorted_board = sorted(group_board.items(), key=lambda x: x[1], reverse=True)
-    return sorted_board[:top_n]
+    rows = await db.fetch(query, group_id, top_n)
+    leaderboard = []
+    for row in rows:
+        mention = f"[{row['username']}](tg://user?id={row['user_id']})"  # clickable name
+        leaderboard.append((mention, row["points"]))
+    return leaderboard
 
-async def award_points(group_id: int, user_id: int, points: int, username: str = None):
-    """
-    Award points to a user on the leaderboard.
-    """
-    await add_user(user_id, username)
-    leaderboards.setdefault(group_id, {})
-    leaderboards[group_id][user_id] = leaderboards[group_id].get(user_id, 0) + points
-
-async def reset_leaderboard(group_id: int):
-    """
-    Resets the leaderboard for a group.
-    """
-    leaderboards[group_id] = {}
-
-def register_moderation_handlers(app):
-    app.add_handler(CommandHandler("mute", mute))
-    app.add_handler(CommandHandler("ban", ban))
-    app.add_handler(MessageHandler(filters.ALL, moderation_guard))
+async def reset_leaderboard_db(group_id: int):
+    query = "DELETE FROM leaderboard WHERE group_id = $1"
+    await db.execute(query, group_id)
