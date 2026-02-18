@@ -9,7 +9,6 @@ from connection import db
 # PTB modules
 from utils import register_utils_handlers
 from economy import register_economy_handlers
-from governance import register_governance_handlers
 from games import register_games_handlers
 from moderation import register_moderation_handlers
 from analytics import register_analytics_handlers, referral_scheduler
@@ -43,7 +42,6 @@ async def main():
     # Register feature modules
     register_utils_handlers(app)
     register_economy_handlers(app)
-    register_governance_handlers(app)
     register_games_handlers(app)
     register_moderation_handlers(app)
     register_analytics_handlers(app)
