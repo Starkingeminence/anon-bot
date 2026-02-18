@@ -6,7 +6,6 @@ Feb 2026
 Responsibilities:
 - Anti-spam & anti-link
 - Captcha verification for new/rejoining users
-- Cross-group banning & reputation tracking
 - Escalation logic (warn → mute → ban)
 - Admin protection from moderation by other admins
 - Reason required for all moderation actions
@@ -18,7 +17,7 @@ import re
 import hashlib
 from datetime import datetime, timedelta
 from telegram import Update
-from telegram.ext import ContextTypes
+from telegram.ext import ContextTypes, CommandHandler, MessageHandler, filters
 
 # -----------------------------
 # CONFIGURABLE PARAMETERS
@@ -26,7 +25,6 @@ from telegram.ext import ContextTypes
 LINK_REGEX = re.compile(r"(https?://|t\.me/|www\.)", re.IGNORECASE)
 SPAM_THRESHOLD = 5
 SPAM_WINDOW = timedelta(hours=1)
-CROSS_GROUP_BAN_THRESHOLD = 3  # banned in 3 groups → global restriction
 CAPTCHA_ATTEMPTS = 5
 CAPTCHA_TIMEOUT = timedelta(seconds=15)
 
@@ -35,10 +33,8 @@ CAPTCHA_TIMEOUT = timedelta(seconds=15)
 # -----------------------------
 recent_messages = {}   # (group_id, user_id, msg_hash) -> (first_seen, count)
 penalties = {}         # (group_id, user_id) -> {"level":0=none,1=warn,2=mute,3=ban, "reason":str, "timestamp":datetime}
-cross_group_bans = {}  # user_id -> set(group_ids)
-reports = []           # list of report dicts
 captcha_challenges = {} # user_id -> {"answer":int, "attempts":int, "expires":datetime}
-
+reports = []           # list of report dicts
 group_settings = {}    # group_id -> settings dict
 
 # -----------------------------
@@ -96,29 +92,6 @@ async def validate_captcha(user_id, response: str):
     return False, "Incorrect, try again."
 
 # -----------------------------
-# ANTI-SPAM / ANTI-LINK
-# -----------------------------
-async def check_hard_violation(message) -> str | None:
-    if is_forwarded(message):
-        return "forwarded_message"
-    if contains_link(message.text or ""):
-        return "link_detected"
-    return None
-
-async def check_soft_spam(message, group_id: int, user_id: int) -> bool:
-    msg_hash = hash_message(message.text)
-    now = datetime.utcnow()
-    key = (group_id, user_id, msg_hash)
-    first_seen, count = recent_messages.get(key, (now, 0))
-    if now - first_seen <= SPAM_WINDOW:
-        count += 1
-        recent_messages[key] = (first_seen, count)
-        return count >= SPAM_THRESHOLD
-    else:
-        recent_messages[key] = (now, 1)
-        return False
-
-# -----------------------------
 # ESCALATION LOGIC
 # -----------------------------
 async def escalate_penalty(group_id: int, user_id: int, reason: str) -> int:
@@ -126,21 +99,15 @@ async def escalate_penalty(group_id: int, user_id: int, reason: str) -> int:
     current = penalties.get(key, {"level": 0})
     new_level = current["level"] + 1
     penalties[key] = {"level": new_level, "reason": reason, "timestamp": datetime.utcnow()}
-
-    if new_level >= 3:
-        cross_group_bans.setdefault(user_id, set()).add(group_id)
     return new_level
-
-async def check_cross_group_restriction(user_id: int) -> bool:
-    return len(cross_group_bans.get(user_id, set())) >= CROSS_GROUP_BAN_THRESHOLD
 
 # -----------------------------
 # ADMIN SAFETY
 # -----------------------------
-async def can_moderate(admin_user, target_user, is_owner=False):
+async def can_moderate(actor, target_user, is_owner=False):
     if target_user.is_bot:
         return False, "Bots cannot be moderated."
-    if target_user.id == admin_user.id:
+    if target_user.id == actor.id:
         return False, "You cannot moderate yourself."
     if target_user.status in ["administrator", "creator"] and not is_owner:
         return False, "⚠️ Cannot moderate fellow admins/owners."
@@ -151,7 +118,6 @@ async def can_moderate(admin_user, target_user, is_owner=False):
 # -----------------------------
 async def enforce_action(update: Update, context: ContextTypes.DEFAULT_TYPE,
                          action: str, target_user, reason: str, is_owner=False):
-
     can_act, msg = await can_moderate(update.effective_user, target_user, is_owner)
     if not can_act:
         await update.message.reply_text(msg)
@@ -177,7 +143,6 @@ async def enforce_action(update: Update, context: ContextTypes.DEFAULT_TYPE,
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user):
     key = (update.effective_chat.id, target_user.id)
     info = penalties.get(key)
-
     if not info:
         await update.message.reply_text(
             f"Status for {target_user.first_name}:\n"
@@ -206,8 +171,8 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target = update.message.reply_to_message.from_user
     msg = update.message.reply_to_message
 
-    is_target_admin = target.status in ["administrator", "creator"]
     allow_admin_reports = group_settings.get(chat.id, {}).get("allow_admin_reports", False)
+    is_target_admin = target.status in ["administrator", "creator"]
 
     report = {
         "group_id": chat.id,
@@ -227,7 +192,11 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("✅ Report submitted. Moderators have been notified.")
 
+# -----------------------------
+# REGISTER HANDLERS
+# -----------------------------
 def register_moderation_handlers(app):
+    from moderation_actions import mute, ban, moderation_guard  # import your action handlers
     app.add_handler(CommandHandler("mute", mute))
     app.add_handler(CommandHandler("ban", ban))
     app.add_handler(MessageHandler(filters.ALL, moderation_guard))
