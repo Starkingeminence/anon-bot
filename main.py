@@ -1,7 +1,6 @@
 import os
 import asyncio
 import logging
-
 from telegram.ext import ApplicationBuilder
 
 from connection import db
@@ -16,14 +15,26 @@ from analytics import register_analytics_handlers, referral_scheduler
 # Telethon anon client
 from anon_messaging import start_anon_client
 
-logging.basicConfig(level=logging.INFO)
+# -----------------------------
+# Logging setup
+# -----------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
 logger = logging.getLogger(__name__)
+
+# -----------------------------
+# Environment validation
+# -----------------------------
+REQUIRED_ENVS = ["DATABASE_URL", "TELEGRAM_BOT_TOKEN", "API_ID", "API_HASH"]
+missing = [var for var in REQUIRED_ENVS if not os.getenv(var)]
+if missing:
+    raise SystemExit(f"Missing required environment variables: {', '.join(missing)}")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-
-if not DATABASE_URL or not BOT_TOKEN:
-    raise SystemExit("Missing DATABASE_URL or TELEGRAM_BOT_TOKEN")
 
 
 async def main():
@@ -51,16 +62,16 @@ async def main():
     # -----------------------
     # Start Background Tasks
     # -----------------------
-    asyncio.create_task(referral_scheduler(app))
-    asyncio.create_task(start_anon_client())
-
+    asyncio.create_task(referral_scheduler(app), name="referral_scheduler")
+    asyncio.create_task(start_anon_client(), name="anon_client")
     logger.info("Background services started ✅")
 
     # -----------------------
     # Run PTB
     # -----------------------
+    bot_info = await app.bot.get_me()
+    logger.info(f"Bot started as @{bot_info.username} ✅")
     await app.run_polling()
-
 
 if __name__ == "__main__":
     asyncio.run(main())
