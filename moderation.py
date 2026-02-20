@@ -11,13 +11,17 @@ Responsibilities:
 - Reason required for all moderation actions
 - /status command reporting
 - /report command
+- Blacklist + AI semantic detection
+- English-only enforcement (Pro+)
+- Spam-score system with repeat offender ban
 """
 
 import re
 import hashlib
 from datetime import datetime, timedelta
-from telegram import Update
+from telegram import Update, ChatPermissions
 from telegram.ext import ContextTypes, CommandHandler, MessageHandler, filters
+from users import add_user
 
 # -----------------------------
 # CONFIGURABLE PARAMETERS
@@ -27,15 +31,19 @@ SPAM_THRESHOLD = 5
 SPAM_WINDOW = timedelta(hours=1)
 CAPTCHA_ATTEMPTS = 5
 CAPTCHA_TIMEOUT = timedelta(seconds=15)
+SPAM_FIRST_MUTE = 5   # minutes
+AI_CONF_THRESHOLD = 0.65
+ENGLISH_WARN_THRESHOLD = 5
 
 # -----------------------------
 # IN-MEMORY CACHE
 # -----------------------------
-recent_messages = {}   # (group_id, user_id, msg_hash) -> (first_seen, count)
-penalties = {}         # (group_id, user_id) -> {"level":0=none,1=warn,2=mute,3=ban, "reason":str, "timestamp":datetime}
-captcha_challenges = {} # user_id -> {"answer":int, "attempts":int, "expires":datetime}
-reports = []           # list of report dicts
-group_settings = {}    # group_id -> settings dict
+recent_messages = {}        # (group_id, user_id, msg_hash) -> (first_seen, count)
+spam_offenses = {}          # (group_id, user_id) -> offense count
+penalties = {}              # (group_id, user_id) -> {"level":0=none,1=warn,2=mute,3=ban, "reason":str, "timestamp":datetime}
+captcha_challenges = {}     # user_id -> {"answer":int, "attempts":int, "expires":datetime}
+reports = []                # list of report dicts
+group_settings = {}         # group_id -> settings dict
 
 # -----------------------------
 # HELPERS
@@ -92,16 +100,6 @@ async def validate_captcha(user_id, response: str):
     return False, "Incorrect, try again."
 
 # -----------------------------
-# ESCALATION LOGIC
-# -----------------------------
-async def escalate_penalty(group_id: int, user_id: int, reason: str) -> int:
-    key = (group_id, user_id)
-    current = penalties.get(key, {"level": 0})
-    new_level = current["level"] + 1
-    penalties[key] = {"level": new_level, "reason": reason, "timestamp": datetime.utcnow()}
-    return new_level
-
-# -----------------------------
 # ADMIN SAFETY
 # -----------------------------
 async def can_moderate(actor, target_user, is_owner=False):
@@ -114,89 +112,98 @@ async def can_moderate(actor, target_user, is_owner=False):
     return True, None
 
 # -----------------------------
-# MODERATION ACTION HANDLER
+# PENALTY ESCALATION
 # -----------------------------
-async def enforce_action(update: Update, context: ContextTypes.DEFAULT_TYPE,
-                         action: str, target_user, reason: str, is_owner=False):
-    can_act, msg = await can_moderate(update.effective_user, target_user, is_owner)
-    if not can_act:
-        await update.message.reply_text(msg)
-        return
-
-    if not reason:
-        await update.message.reply_text("❌ You must provide a reason for this action.")
-        return
-
-    level = await escalate_penalty(update.effective_chat.id, target_user.id, reason)
-    timestamp = penalties[(update.effective_chat.id, target_user.id)]["timestamp"]
-
-    await update.message.reply_text(
-        f"✅ {action.capitalize()} applied to {target_user.first_name}\n"
-        f"Reason: {reason}\n"
-        f"Penalty Level: {level}\n"
-        f"Date/Time: {timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')}"
-    )
+async def escalate_penalty(group_id: int, user_id: int, reason: str) -> int:
+    key = (group_id, user_id)
+    current = penalties.get(key, {"level": 0})
+    new_level = current["level"] + 1
+    penalties[key] = {"level": new_level, "reason": reason, "timestamp": datetime.utcnow()}
+    return new_level
 
 # -----------------------------
-# STATUS COMMAND
+# SPAM SCORE / DUPLICATE HANDLER
 # -----------------------------
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user):
-    key = (update.effective_chat.id, target_user.id)
-    info = penalties.get(key)
-    if not info:
-        await update.message.reply_text(
-            f"Status for {target_user.first_name}:\n"
-            f"State: Active\nReason: None\nDate/Time: N/A"
-        )
+async def handle_duplicate_spam(group_id: int, user_id: int, msg_hash: str, message_obj):
+    now = datetime.utcnow()
+    key = (group_id, user_id, msg_hash)
+    first_seen, count = recent_messages.get(key, (now, 0))
+    if now - first_seen <= SPAM_WINDOW:
+        count += 1
+        recent_messages[key] = (first_seen, count)
+        if count >= SPAM_THRESHOLD:
+            # First offense → mute
+            if spam_offenses.get((group_id, user_id), 0) == 0:
+                spam_offenses[(group_id, user_id)] = 1
+                await message_obj.delete()
+                await mute_user(message_obj.chat_id, user_id, SPAM_FIRST_MUTE)
+                return "first_mute"
+            # Second offense → ban
+            elif spam_offenses.get((group_id, user_id), 0) == 1:
+                spam_offenses[(group_id, user_id)] = 2
+                await message_obj.delete()
+                await ban_user(message_obj.chat_id, user_id)
+                return "second_ban"
+    else:
+        recent_messages[key] = (now, 1)
+    return None
+
+# -----------------------------
+# MODERATION GUARD
+# -----------------------------
+async def moderation_guard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.is_bot:
         return
 
-    level_map = {1: "Warned", 2: "Muted", 3: "Banned"}
-    await update.message.reply_text(
-        f"Status for {target_user.first_name}:\n"
-        f"State: {level_map.get(info['level'], 'Active')}\n"
-        f"Reason: {info['reason']}\n"
-        f"Date/Time: {info['timestamp'].strftime('%Y-%m-%d %H:%M:%S UTC')}"
-    )
+    chat_id = update.effective_chat.id
+    user = update.effective_user
+    text = (update.message.text or "").strip()
 
-# -----------------------------
-# REPORT COMMAND
-# -----------------------------
-async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message.reply_to_message:
-        await update.message.reply_text("❌ You must reply to a message to report it.")
+    # Duplicate spam
+    msg_hash = hash_message(text)
+    spam_result = await handle_duplicate_spam(chat_id, user.id, msg_hash, update.message)
+    if spam_result:
         return
 
-    chat = update.effective_chat
-    reporter = update.effective_user
-    target = update.message.reply_to_message.from_user
-    msg = update.message.reply_to_message
-
-    allow_admin_reports = group_settings.get(chat.id, {}).get("allow_admin_reports", False)
-    is_target_admin = target.status in ["administrator", "creator"]
-
-    report = {
-        "group_id": chat.id,
-        "reported_user": target.id,
-        "reported_name": target.full_name,
-        "reporter": reporter.id,
-        "message": msg.text or "[NON-TEXT MESSAGE]",
-        "timestamp": utc_now(),
-        "message_id": msg.message_id
-    }
-
-    reports.append(report)
-
-    if is_target_admin and not allow_admin_reports:
-        await update.message.reply_text("❌ Admins cannot be reported in this group.")
+    # Blacklist check
+    if await is_blacklisted(text, chat_id):
+        await update.message.delete()
+        await mute_user(chat_id, user.id, 5, reason="Blacklist word")
         return
 
-    await update.message.reply_text("✅ Report submitted. Moderators have been notified.")
+    # AI Semantic Blacklist (Pro+)
+    settings = group_settings.get(chat_id, {})
+    ai_enabled = settings.get("ai_enabled", False)
+    user_tier = settings.get("tier", "free")
+    if ai_enabled and user_tier in ["pro", "pro+", "enterprise"]:
+        ai_result = await analyze_ai_blacklist(text, chat_id)
+        if ai_result and ai_result.get("confidence", 0) >= AI_CONF_THRESHOLD:
+            await update.message.delete()
+            await mute_user(chat_id, user.id, 5, reason=f"AI detected: {ai_result['concept']}")
+            return
+
+    # English-only enforcement (Pro+)
+    english_only = settings.get("english_only", False)
+    if english_only and user_tier in ["pro", "pro+", "enterprise"]:
+        lang = await detect_language(text)
+        if lang != "en":
+            level = await escalate_penalty(chat_id, user.id, "Non-English message in English-only group")
+            await update.message.delete()
+            warning_text = await get_translated_warning(lang)
+            await update.message.reply_text(warning_text)
+            if level >= ENGLISH_WARN_THRESHOLD:
+                await mute_user(chat_id, user.id, 5, reason="Repeated non-English messages")
+            return
 
 # -----------------------------
 # REGISTER HANDLERS
 # -----------------------------
 def register_moderation_handlers(app):
-    from moderation_actions import mute, ban, moderation_guard  # import your action handlers
+    from moderation_actions import mute, ban  # manual commands
     app.add_handler(CommandHandler("mute", mute))
     app.add_handler(CommandHandler("ban", ban))
+    app.add_handler(CommandHandler("dmute", mute))  # delete + mute wrapper
+    app.add_handler(CommandHandler("dban", ban))    # delete + ban wrapper
+    app.add_handler(CommandHandler("warn", warn))   # manual warn
+    app.add_handler(CommandHandler("kick", kick))   # manual kick
     app.add_handler(MessageHandler(filters.ALL, moderation_guard))
