@@ -248,3 +248,15 @@ async def expire_subscription(bot, group_id: int):
             await bot.send_message(owner_id, "⚠️ Your subscription has expired. The bot has been downgraded to Free tier.")
         except Exception as e:
             logger.error(f"Failed to notify owner {owner_id}: {e}")
+
+# -----------------------------
+# BACKGROUND PHASE WATCHER
+# -----------------------------
+async def subscription_phase_watcher(app, interval_sec: int = 3600):
+    """Periodically checks subscriptions and notifies owners of phase changes."""
+    while True:
+        try:
+            await check_subscriptions(app)
+        except Exception as e:
+            logger.error(f"Error in subscription phase watcher: {e}")
+        await asyncio.sleep(interval_sec)
