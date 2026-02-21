@@ -63,6 +63,7 @@ async def main():
     # Start Background Tasks
     # -----------------------
     asyncio.create_task(referral_scheduler(app), name="referral_scheduler")
+    asyncio.create_task(subscription_phase_watcher(app))
     asyncio.create_task(start_anon_client(), name="anon_client")
     logger.info("Background services started ✅")
 
