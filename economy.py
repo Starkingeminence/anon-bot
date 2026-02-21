@@ -81,14 +81,9 @@ async def check_group_member_limit(group_id: int, current_member_count: int) -> 
 # =========================================================
 
 async def verify_payment(memo: str, expected_amount: float) -> bool:
-    """
-    Verify TON payment via TON Center API.
-    Checks bot wallet transactions for matching memo and amount.
-    """
-
     params = {
         "account": TON_WALLET_ADDRESS,
-        "limit": 50  # last 50 transactions
+        "limit": 50
     }
     headers = {}
     if TON_API_KEY:
@@ -100,25 +95,19 @@ async def verify_payment(memo: str, expected_amount: float) -> bool:
                 if resp.status != 200:
                     logger.error(f"TON API request failed: {resp.status}")
                     return False
-
                 data = await resp.json()
                 if "result" not in data:
                     logger.error(f"Unexpected TON API response: {data}")
                     return False
-
                 for tx in data["result"]:
-                    # Only incoming messages
                     if tx.get("in_msg") and tx.get("msg_data"):
                         tx_memo = tx.get("msg_data", {}).get("text", "")
-                        tx_amount = float(tx.get("amount", 0)) / 1e9  # nanoTON → TON
-
+                        tx_amount = float(tx.get("amount", 0)) / 1e9
                         if tx_memo == str(memo) and tx_amount >= expected_amount:
                             logger.info(f"Payment verified: {tx_amount} TON with memo {tx_memo}")
                             return True
-
                 logger.warning(f"No valid payment found for memo {memo}")
                 return False
-
         except Exception as e:
             logger.error(f"Error verifying payment for memo {memo}: {e}")
             return False
@@ -147,15 +136,16 @@ async def activate_subscription(group_id: int, tier: str, duration_days: int = 3
             end_date = EXCLUDED.end_date,
             status = 'active'
     """
-
     await db.execute(query, group_id, tier, start_date, end_date)
     await set_group_tier(group_id, tier)
-
     logger.info(f"Activated {tier} subscription for group {group_id} until {end_date}")
 
 # =========================================================
-# SUBSCRIPTION LIFECYCLE
+# SUBSCRIPTION LIFECYCLE + PHASE NOTIFICATIONS
 # =========================================================
+
+# Track last notified phase per group
+last_notified_phase = {}  # group_id -> phase_name
 
 async def check_subscriptions(bot):
     query = "SELECT * FROM subscriptions"
@@ -172,14 +162,49 @@ async def check_subscriptions(bot):
 
         days_left = (end_date - now).days
 
+        # Notify owner during grace period
         if status == "active" and days_left <= SUBSEQUENT_GRACE_DAYS:
             await notify_owner_grace(bot, group_id, days_left)
 
+        # Expire → start grace
         if status == "active" and now > end_date:
             await start_grace_period(group_id)
 
+        # Grace expired → expire subscription
         if status == "grace" and now > end_date:
             await expire_subscription(bot, group_id)
+
+        # --- PHASE NOTIFICATIONS ---
+        phase = await get_subscription_status(group_id)
+        last_phase = last_notified_phase.get(group_id)
+        if phase != last_phase:
+            last_notified_phase[group_id] = phase
+            await notify_owner_phase(bot, group_id, phase)
+
+# =========================================================
+# PHASE NOTIFICATIONS
+# =========================================================
+
+async def notify_owner_phase(bot, group_id: int, phase: str):
+    query = "SELECT user_id FROM permissions WHERE group_id = $1 AND role = 'owner'"
+    owner_row = await db.fetchrow(query, group_id)
+    if not owner_row:
+        return
+    owner_id = owner_row["user_id"]
+
+    phase_messages = {
+        "phase1": "⚠️ AI features have been disabled after subscription expiration.",
+        "phase2": "⚠️ English-only enforcement and games features are now disabled.",
+        "phase3": "⚠️ Advanced spam and moderation features are now disabled.",
+        "dormant": "❌ All bot features are now inactive except /upgrade in DM."
+    }
+
+    msg = phase_messages.get(phase, f"ℹ️ Subscription phase changed to {phase}.")
+    try:
+        await bot.send_message(owner_id, msg)
+        logger.info(f"Owner notified for group {group_id} phase {phase}")
+    except Exception as e:
+        logger.error(f"Failed to notify owner {owner_id} for phase {phase}: {e}")
 
 # =========================================================
 # GRACE PERIOD HANDLING
@@ -190,7 +215,6 @@ async def notify_owner_grace(bot, group_id: int, days_left: int):
     owner_row = await db.fetchrow(query, group_id)
     if not owner_row:
         return
-
     owner_id = owner_row["user_id"]
     try:
         await bot.send_message(owner_id, f"⚠️ Your group's subscription will expire in {days_left} days.")
@@ -200,7 +224,6 @@ async def notify_owner_grace(bot, group_id: int, days_left: int):
 async def start_grace_period(group_id: int):
     now = datetime.utcnow()
     grace_days = SUBSEQUENT_GRACE_DAYS
-
     query = """
         UPDATE subscriptions
         SET status = 'grace',
@@ -209,19 +232,16 @@ async def start_grace_period(group_id: int):
     """
     new_end = now + timedelta(days=grace_days)
     await db.execute(query, group_id, new_end)
-
     logger.info(f"Started grace period ({grace_days} days) for group {group_id}")
 
 async def expire_subscription(bot, group_id: int):
     query = "UPDATE subscriptions SET status = 'expired' WHERE group_id = $1"
     await db.execute(query, group_id)
-
     await set_group_tier(group_id, "free")
     logger.info(f"Subscription expired for group {group_id}")
 
     owner_query = "SELECT user_id FROM permissions WHERE group_id = $1 AND role = 'owner'"
     owner_row = await db.fetchrow(owner_query, group_id)
-
     if owner_row:
         owner_id = owner_row["user_id"]
         try:
