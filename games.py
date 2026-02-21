@@ -113,3 +113,7 @@ async def get_leaderboard_db(group_id: int, top_n: int = 10):
 async def reset_leaderboard_db(group_id: int):
     query = "DELETE FROM leaderboard WHERE group_id = $1"
     await db.execute(query, group_id)
+
+def register_games_handlers(app):
+    """Placeholder for games command registration. Currently does nothing."""
+    pass
