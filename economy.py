@@ -260,3 +260,7 @@ async def subscription_phase_watcher(app, interval_sec: int = 3600):
         except Exception as e:
             logger.error(f"Error in subscription phase watcher: {e}")
         await asyncio.sleep(interval_sec)
+
+def register_economy_handlers(app):
+    """Placeholder for economy command registration. Currently does nothing."""
+    pass
