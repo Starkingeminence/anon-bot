@@ -146,3 +146,7 @@ async def delete_message(
 ):
     await bot.delete_messages(chat_id, message_id)
     logger.info(f"Deleted message {message_id} in chat {chat_id}")
+
+def register_utils_handlers(app):
+    """Placeholder for utility command registration. Currently does nothing."""
+    pass
