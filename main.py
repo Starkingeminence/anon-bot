@@ -6,7 +6,6 @@ from telegram.ext import ApplicationBuilder
 from connection import db
 
 # PTB modules
-from utils import register_utils_handlers
 from economy import register_economy_handlers
 from games import register_games_handlers
 from moderation import register_moderation_handlers
@@ -51,7 +50,6 @@ async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     # Register feature modules
-    register_utils_handlers(app)
     register_economy_handlers(app)
     register_games_handlers(app)
     register_moderation_handlers(app)
