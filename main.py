@@ -11,6 +11,7 @@ from economy import register_economy_handlers
 from games import register_games_handlers
 from moderation import register_moderation_handlers
 from analytics import register_analytics_handlers, referral_scheduler
+from subscription_manager import subscription_phase_watcher
 
 # Telethon anon client
 from anon_messaging import start_anon_client
