@@ -16,6 +16,7 @@ from subscription_manager import subscription_phase_watcher
 # Telethon anon client
 from anon_messaging import start_anon_client
 
+
 # -----------------------------
 # Logging setup
 # -----------------------------
@@ -25,6 +26,7 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 logger = logging.getLogger(__name__)
+
 
 # -----------------------------
 # Environment validation
@@ -38,46 +40,70 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 
-async def main():
-
-    # -----------------------
-    # Connect DB
-    # -----------------------
-    await db.connect(DATABASE_URL)
-    logger.info("Database connected ✅")
-
-    # -----------------------
-    # Build PTB Bot
-    # -----------------------
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    # Register feature modules
-    register_utils_handlers(app)
-    register_economy_handlers(app)
-    register_games_handlers(app)
-    register_moderation_handlers(app)
-    register_analytics_handlers(app)
-
-    logger.info("Handlers registered ✅")
-
-    # -----------------------
-    # Start Background Tasks
-    # -----------------------
-    async def safe_task(coro, name):
+# -----------------------------
+# Safe Background Task Wrapper
+# -----------------------------
+async def safe_task(coro, name):
     try:
         await coro
     except Exception:
         logger.exception(f"Background task crashed: {name}")
 
-asyncio.create_task(safe_task(referral_scheduler(app), "referral_scheduler"))
-asyncio.create_task(safe_task(subscription_phase_watcher(app), "phase_watcher"))
-asyncio.create_task(safe_task(start_anon_client(), "anon_client"))
-    # -----------------------
-    # Run PTB
-    # -----------------------
-    bot_info = await app.bot.get_me()
-    logger.info(f"Bot started as @{bot_info.username} ✅")
-    await app.run_polling()
 
+# -----------------------------
+# Main Application
+# -----------------------------
+async def main():
+    try:
+        # -----------------------
+        # Connect DB
+        # -----------------------
+        await db.connect(DATABASE_URL)
+        logger.info("Database connected ✅")
+
+        # -----------------------
+        # Build PTB Bot
+        # -----------------------
+        app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+        # Register feature modules
+        register_utils_handlers(app)
+        register_economy_handlers(app)
+        register_games_handlers(app)
+        register_moderation_handlers(app)
+        register_analytics_handlers(app)
+
+        logger.info("Handlers registered ✅")
+
+        # -----------------------
+        # Start Background Tasks
+        # -----------------------
+        asyncio.create_task(
+            safe_task(referral_scheduler(app), "referral_scheduler")
+        )
+        asyncio.create_task(
+            safe_task(subscription_phase_watcher(app), "phase_watcher")
+        )
+        asyncio.create_task(
+            safe_task(start_anon_client(), "anon_client")
+        )
+
+        logger.info("Background services started ✅")
+
+        # -----------------------
+        # Run PTB
+        # -----------------------
+        bot_info = await app.bot.get_me()
+        logger.info(f"Bot started as @{bot_info.username} ✅")
+
+        await app.run_polling()
+
+    except Exception:
+        logger.exception("Fatal crash during startup")
+
+
+# -----------------------------
+# Entrypoint
+# -----------------------------
 if __name__ == "__main__":
     asyncio.run(main())
