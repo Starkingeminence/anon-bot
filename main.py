@@ -63,11 +63,15 @@ async def main():
     # -----------------------
     # Start Background Tasks
     # -----------------------
-    asyncio.create_task(referral_scheduler(app), name="referral_scheduler")
-    asyncio.create_task(subscription_phase_watcher(app))
-    asyncio.create_task(start_anon_client(), name="anon_client")
-    logger.info("Background services started ✅")
+    async def safe_task(coro, name):
+    try:
+        await coro
+    except Exception:
+        logger.exception(f"Background task crashed: {name}")
 
+asyncio.create_task(safe_task(referral_scheduler(app), "referral_scheduler"))
+asyncio.create_task(safe_task(subscription_phase_watcher(app), "phase_watcher"))
+asyncio.create_task(safe_task(start_anon_client(), "anon_client"))
     # -----------------------
     # Run PTB
     # -----------------------
