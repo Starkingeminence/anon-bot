@@ -51,33 +51,15 @@ async def safe_task(coro, name):
 
 
 # -----------------------------
-# Main Application
+# Startup Hook
 # -----------------------------
-async def main():
+async def on_startup(app):
     try:
-        # -----------------------
         # Connect DB
-        # -----------------------
         await db.connect(DATABASE_URL)
         logger.info("Database connected ✅")
 
-        # -----------------------
-        # Build PTB Bot
-        # -----------------------
-        app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-        # Register feature modules
-        register_utils_handlers(app)
-        register_economy_handlers(app)
-        register_games_handlers(app)
-        register_moderation_handlers(app)
-        register_analytics_handlers(app)
-
-        logger.info("Handlers registered ✅")
-
-        # -----------------------
-        # Start Background Tasks
-        # -----------------------
+        # Start background services
         asyncio.create_task(
             safe_task(referral_scheduler(app), "referral_scheduler")
         )
@@ -90,20 +72,25 @@ async def main():
 
         logger.info("Background services started ✅")
 
-        # -----------------------
-        # Run PTB
-        # -----------------------
-        bot_info = await app.bot.get_me()
-        logger.info(f"Bot started as @{bot_info.username} ✅")
-
-        await app.run_polling()
-
     except Exception:
-        logger.exception("Fatal crash during startup")
+        logger.exception("Startup failed ❌")
+        raise
 
 
 # -----------------------------
 # Entrypoint
 # -----------------------------
 if __name__ == "__main__":
-    asyncio.run(main())
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    # Register handlers
+    register_utils_handlers(app)
+    register_economy_handlers(app)
+    register_games_handlers(app)
+    register_moderation_handlers(app)
+    register_analytics_handlers(app)
+
+    logger.info("Handlers registered ✅")
+
+    # Run bot properly (PTB manages event loop)
+    app.run_polling(on_startup=on_startup)
