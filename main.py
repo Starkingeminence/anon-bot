@@ -93,4 +93,13 @@ if __name__ == "__main__":
     logger.info("Handlers registered ✅")
 
     # Run bot properly (PTB manages event loop)
-    app.run_polling(on_startup=on_startup)
+    async def main():
+    # Connect DB / Redis / etc.
+    await db.connect(DATABASE_URL)
+    
+    # Schedule background tasks
+    asyncio.create_task(referral_scheduler(app))
+    
+    # Run polling
+    await app.run_polling()
+    app.run_polling()
