@@ -7,6 +7,7 @@ import redis
 import re
 
 from telegram import Update
+from telegram import ChatMemberUpdated
 from telegram.ext import (
     ContextTypes,
     CommandHandler,
@@ -282,6 +283,19 @@ async def referral_scheduler(app):
                     except:
                         pass
         await asyncio.sleep(300)
+
+# Track user joins / new members
+async def track_joins(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_member: ChatMemberUpdated = update.chat_member
+    user = chat_member.new_chat_member.user
+    if user.is_bot:
+        return
+    chat_id = update.effective_chat.id
+
+    # Only track new members, not leaves or kicks
+    if chat_member.new_chat_member.status == "member":
+        print(f"User {user.id} joined chat {chat_id}")
+        # Optional: add referral or welcome logic here
 
 # ==========================================
 # ----------- REGISTER HANDLERS ------------
