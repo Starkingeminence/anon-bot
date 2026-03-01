@@ -13,7 +13,7 @@ from telegram.ext import (
     MessageHandler,
     MessageReactionHandler,
     ChatMemberHandler,
-    filters,
+    PollHandler,
 )
 
 # ==========================================
@@ -289,13 +289,13 @@ def register_analytics_handlers(app):
     # Weekly tracking
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, track_weekly_messages))
     app.add_handler(MessageReactionHandler(track_weekly_reactions))
-    app.add_handler(MessageHandler(filters.PollAnswer, track_weekly_polls))
+    app.add_handler(PollHandler(track_weekly_polls))
 
     # Lifetime tracking
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, track_lifetime_messages))
     app.add_handler(MessageReactionHandler(track_lifetime_reactions))
-    app.add_handler(MessageHandler(filters.PollAnswer, track_lifetime_polls))
-
+    app.add_handler(PollHandler(track_lifetime_polls))
+    
     # Commands
     app.add_handler(CommandHandler("pulse", pulse))
     app.add_handler(CommandHandler("insights", insights))
