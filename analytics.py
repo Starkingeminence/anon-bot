@@ -289,7 +289,7 @@ def register_analytics_handlers(app):
     # Weekly tracking
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, track_weekly_messages))
     app.add_handler(MessageReactionHandler(track_weekly_reactions))
-    app.add_handler(MessageHandler(filters.POLL_ANSWER, track_weekly_polls))
+    app.add_handler(MessageHandler(filters.PollAnswer, track_weekly_polls))
 
     # Lifetime tracking
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, track_lifetime_messages))
