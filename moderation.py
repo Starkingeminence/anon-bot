@@ -196,14 +196,63 @@ async def moderation_guard(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
 # -----------------------------
+# BASIC MANUAL MODERATION COMMANDS
+# -----------------------------
+async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.reply_to_message:
+        await update.message.reply_text("Reply to a user to mute them.")
+        return
+
+    target = update.message.reply_to_message.from_user
+    await update.effective_chat.restrict_member(
+        target.id,
+        ChatPermissions(can_send_messages=False)
+    )
+    await update.message.reply_text(f"🔇 {target.mention_html()} muted.",
+                                    parse_mode="HTML")
+
+
+async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.reply_to_message:
+        await update.message.reply_text("Reply to a user to ban them.")
+        return
+
+    target = update.message.reply_to_message.from_user
+    await update.effective_chat.ban_member(target.id)
+    await update.message.reply_text(f"⛔ {target.mention_html()} banned.",
+                                    parse_mode="HTML")
+
+
+async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.reply_to_message:
+        await update.message.reply_text("Reply to a user to warn them.")
+        return
+
+    target = update.message.reply_to_message.from_user
+    await update.message.reply_text(f"⚠️ {target.mention_html()} warned.",
+                                    parse_mode="HTML")
+
+
+async def kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.reply_to_message:
+        await update.message.reply_text("Reply to a user to kick them.")
+        return
+
+    target = update.message.reply_to_message.from_user
+    await update.effective_chat.ban_member(target.id)
+    await update.effective_chat.unban_member(target.id)
+    await update.message.reply_text(f"👢 {target.mention_html()} kicked.",
+                                    parse_mode="HTML")
+
+
+# -----------------------------
 # REGISTER HANDLERS
 # -----------------------------
 def register_moderation_handlers(app):
-    from moderation_actions import mute, ban  # manual commands
     app.add_handler(CommandHandler("mute", mute))
     app.add_handler(CommandHandler("ban", ban))
-    app.add_handler(CommandHandler("dmute", mute))  # delete + mute wrapper
-    app.add_handler(CommandHandler("dban", ban))    # delete + ban wrapper
-    app.add_handler(CommandHandler("warn", warn))   # manual warn
-    app.add_handler(CommandHandler("kick", kick))   # manual kick
+    app.add_handler(CommandHandler("dmute", mute))
+    app.add_handler(CommandHandler("dban", ban))
+    app.add_handler(CommandHandler("warn", warn))
+    app.add_handler(CommandHandler("kick", kick))
     app.add_handler(MessageHandler(filters.ALL, moderation_guard))
