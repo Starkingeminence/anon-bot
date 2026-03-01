@@ -294,7 +294,7 @@ def register_analytics_handlers(app):
     # Lifetime tracking
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, track_lifetime_messages))
     app.add_handler(MessageReactionHandler(track_lifetime_reactions))
-    app.add_handler(MessageHandler(filters.POLL_ANSWER, track_lifetime_polls))
+    app.add_handler(MessageHandler(filters.PollAnswer, track_lifetime_polls))
 
     # Commands
     app.add_handler(CommandHandler("pulse", pulse))
