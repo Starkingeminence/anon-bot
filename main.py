@@ -30,7 +30,7 @@ async def safe_task(coro, name):
         logger.exception(f"Background task crashed: {name}")
 
 
-if __name__ == "__main__":
+async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     # Register all handlers
@@ -41,23 +41,29 @@ if __name__ == "__main__":
     register_analytics_handlers(app)
     logger.info("Handlers registered ✅")
 
-    async def startup():
-        # Initialize application (must call before running polling in PTB 20.x)
-        await app.initialize()
-        logger.info("Application initialized ✅")
+    # Initialize PTB app
+    await app.initialize()
+    logger.info("Application initialized ✅")
 
-        # Connect DB
-        await db.connect(DATABASE_URL)
-        logger.info("Database connected ✅")
+    # Connect DB
+    await db.connect(DATABASE_URL)
+    logger.info("Database connected ✅")
 
-        # Start background tasks
-        asyncio.create_task(safe_task(referral_scheduler(app), "referral_scheduler"))
-        asyncio.create_task(safe_task(subscription_phase_watcher(app), "phase_watcher"))
-        asyncio.create_task(safe_task(start_anon_client(), "anon_client"))
-        logger.info("Background services started ✅")
+    # Start background tasks
+    asyncio.create_task(safe_task(referral_scheduler(app), "referral_scheduler"))
+    asyncio.create_task(safe_task(subscription_phase_watcher(app), "phase_watcher"))
+    asyncio.create_task(safe_task(start_anon_client(), "anon_client"))
+    logger.info("Background services started ✅")
 
-        # Run polling
-        await app.run_polling()
+    # Run polling (blocking)
+    await app.run_polling()
 
-    # PTB 20.x expects this to run inside asyncio.run
-    asyncio.run(startup())
+
+# -----------------------------
+# Entrypoint for Render
+# -----------------------------
+# Do NOT wrap in asyncio.run() — PTB handles the loop
+if __name__ == "__main__":
+    import nest_asyncio
+    nest_asyncio.apply()  # Fixes "already running event loop" in Render
+    asyncio.get_event_loop().run_until_complete(main())
