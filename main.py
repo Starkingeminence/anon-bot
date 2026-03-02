@@ -11,9 +11,7 @@ from moderation import register_moderation_handlers
 from analytics import register_analytics_handlers, referral_scheduler
 from anon_messaging import start_anon_client
 
-# -----------------------------
-# Logging setup
-# -----------------------------
+# Logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -21,29 +19,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# -----------------------------
-# Environment validation
-# -----------------------------
-REQUIRED_ENVS = ["DATABASE_URL", "TELEGRAM_BOT_TOKEN", "API_ID", "API_HASH"]
-missing = [var for var in REQUIRED_ENVS if not os.getenv(var)]
-if missing:
-    raise SystemExit(f"Missing required environment variables: {', '.join(missing)}")
-
 DATABASE_URL = os.getenv("DATABASE_URL")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-# -----------------------------
-# Safe Background Task Wrapper
-# -----------------------------
+
 async def safe_task(coro, name):
     try:
         await coro
     except Exception:
         logger.exception(f"Background task crashed: {name}")
 
-# -----------------------------
-# Entrypoint
-# -----------------------------
+
 if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -55,14 +41,23 @@ if __name__ == "__main__":
     register_analytics_handlers(app)
     logger.info("Handlers registered ✅")
 
-    # Connect to DB and start background tasks inside a **startup callback**
-    async def startup_tasks(app):
+    async def startup():
+        # Initialize application (must call before running polling in PTB 20.x)
+        await app.initialize()
+        logger.info("Application initialized ✅")
+
+        # Connect DB
         await db.connect(DATABASE_URL)
         logger.info("Database connected ✅")
+
+        # Start background tasks
         asyncio.create_task(safe_task(referral_scheduler(app), "referral_scheduler"))
         asyncio.create_task(safe_task(subscription_phase_watcher(app), "phase_watcher"))
         asyncio.create_task(safe_task(start_anon_client(), "anon_client"))
         logger.info("Background services started ✅")
 
-    # Run polling — pass startup callback
-    app.run_polling(post_init=startup_tasks)
+        # Run polling
+        await app.run_polling()
+
+    # PTB 20.x expects this to run inside asyncio.run
+    asyncio.run(startup())
