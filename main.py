@@ -15,7 +15,6 @@ from anon_messaging import start_anon_client
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
 )
 logger = logging.getLogger(__name__)
 
@@ -30,21 +29,7 @@ async def safe_task(coro, name):
         logger.exception(f"Background task crashed: {name}")
 
 
-async def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    # Register all handlers
-    register_utils_handlers(app)
-    register_economy_handlers(app)
-    register_games_handlers(app)
-    register_moderation_handlers(app)
-    register_analytics_handlers(app)
-    logger.info("Handlers registered ✅")
-
-    # Initialize PTB app
-    await app.initialize()
-    logger.info("Application initialized ✅")
-
+async def post_init(app):
     # Connect DB
     await db.connect(DATABASE_URL)
     logger.info("Database connected ✅")
@@ -55,15 +40,21 @@ async def main():
     asyncio.create_task(safe_task(start_anon_client(), "anon_client"))
     logger.info("Background services started ✅")
 
-    # Run polling (blocking)
-    await app.run_polling()
+
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
+
+    # Register handlers
+    register_utils_handlers(app)
+    register_economy_handlers(app)
+    register_games_handlers(app)
+    register_moderation_handlers(app)
+    register_analytics_handlers(app)
+    logger.info("Handlers registered ✅")
+
+    # IMPORTANT: no asyncio.run(), no await, no initialize()
+    app.run_polling()
 
 
-# -----------------------------
-# Entrypoint for Render
-# -----------------------------
-# Do NOT wrap in asyncio.run() — PTB handles the loop
 if __name__ == "__main__":
-    import nest_asyncio
-    nest_asyncio.apply()  # Fixes "already running event loop" in Render
-    asyncio.get_event_loop().run_until_complete(main())
+    main()
