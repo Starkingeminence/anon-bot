@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import aiohttp
 from connection import db
 from groups import set_group_tier, get_group_tier
+import asyncio
 
 logger = logging.getLogger(__name__)
 
