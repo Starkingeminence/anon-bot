@@ -26,7 +26,6 @@ class Database:
             self.pool = await asyncpg.create_pool(
                 dsn=url,
                 ssl="require",              # Supabase requires SSL
-                family=socket.AF_INET,      # Force IPv4 (fixes Render issue)
                 min_size=1,
                 max_size=10,
                 command_timeout=60,
