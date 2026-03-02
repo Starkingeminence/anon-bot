@@ -3,9 +3,10 @@ import time
 import json
 import asyncio
 import datetime
-import aioredis
 import re
+import os
 
+import redis.asyncio as redis
 from telegram import Update
 from telegram import ChatMemberUpdated
 from telegram.ext import (
@@ -21,10 +22,14 @@ from telegram.ext import (
 # ==========================================
 # Redis Setup
 # ==========================================
-r = aioredis.from_url(
+REDIS_URL = os.getenv("REDIS_URL")
+
+redis_client = redis.from_url(
     REDIS_URL,
-    decode_responses=True,
+    decode_responses=True
 )
+await redis_client.set("key", "value")
+value = await redis_client.get("key")
 WEEK_SECONDS = 7 * 24 * 60 * 60
 
 # ==========================================
