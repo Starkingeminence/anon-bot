@@ -28,8 +28,6 @@ r = redis.from_url(
     REDIS_URL,
     decode_responses=True
 )
-await redis_client.set("key", "value")
-value = await redis_client.get("key")
 WEEK_SECONDS = 7 * 24 * 60 * 60
 
 # ==========================================
@@ -48,19 +46,19 @@ def pulse_key(chat_id, key_type):
 
 def add_weekly_unique(chat_id, key_type, user_id):
     key = pulse_key(chat_id, key_type)
-    await r.sadd(key, user_id)
-    await r.expire(key, WEEK_SECONDS)
+    r.sadd(key, user_id)
+    r.expire(key, WEEK_SECONDS)
 
 def increment_weekly_counter(chat_id, key_type):
     key = pulse_key(chat_id, key_type)
-    await r.incr(key)
-    await r.expire(key, WEEK_SECONDS)
+    r.incr(key)
+    r.expire(key, WEEK_SECONDS)
 
 def mark_weekly_active_day(chat_id):
     today = datetime.date.today().isoformat()
     key = pulse_key(chat_id, "active_days")
-    await r.sadd(key, today)
-    await r.expire(key, WEEK_SECONDS)
+    r.sadd(key, today)
+    r.expire(key, WEEK_SECONDS)
 
 def get_weekly_data(chat_id):
     A_msg = r.scard(pulse_key(chat_id, "msg_users"))
@@ -159,16 +157,16 @@ def insight_key(chat_id, key):
     return f"insight:{chat_id}:{key}"
 
 def add_lifetime_activity(chat_id, user_id, points):
-    await r.zincrby(insight_key(chat_id, "activity_points"), points, user_id)
+    r.zincrby(insight_key(chat_id, "activity_points"), points, user_id)
 
 def increment_total_activity(chat_id, points):
-    await r.incrbyfloat(insight_key(chat_id, "total_activity"), points)
+    r.incrbyfloat(insight_key(chat_id, "total_activity"), points)
 
 def set_start_date_if_missing(chat_id):
     key = insight_key(chat_id, "start_date")
     if not r.get(key):
         today = datetime.date.today().isoformat()
-        await r.set(key, today)
+        r.set(key, today)
 
 # ---------- Lifetime Tracking ----------
 async def track_lifetime_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
