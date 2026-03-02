@@ -133,7 +133,7 @@ def register_anon_handlers():
 
     # ----------- DM Message Forwarding -----------
 
-    @client.on(events.NewMessage(incoming=True, private=True))
+    @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
     async def anon_dm_handler(event):
 
         if not event.text:
