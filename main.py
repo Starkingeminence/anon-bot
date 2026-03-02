@@ -92,8 +92,8 @@ if __name__ == "__main__":
 
     logger.info("Handlers registered ✅")
 
-    # Run bot properly (PTB manages event loop)
-    async def main():
+# Run bot properly (PTB manages event loop)
+async def main():
     # Connect DB / Redis / etc.
     await db.connect(DATABASE_URL)
     
@@ -102,4 +102,3 @@ if __name__ == "__main__":
     
     # Run polling
     await app.run_polling()
-    app.run_polling()
