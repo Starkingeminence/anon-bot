@@ -4,8 +4,6 @@ import logging
 from telegram.ext import ApplicationBuilder
 
 from connection import db
-
-# PTB modules
 from utils import register_utils_handlers
 from economy import register_economy_handlers, subscription_phase_watcher
 from games import register_games_handlers
@@ -46,7 +44,7 @@ async def safe_task(coro, name):
 # -----------------------------
 # Entrypoint
 # -----------------------------
-async def main():
+if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     # Register all handlers
@@ -57,18 +55,14 @@ async def main():
     register_analytics_handlers(app)
     logger.info("Handlers registered ✅")
 
-    # Connect DB
-    await db.connect(DATABASE_URL)
-    logger.info("Database connected ✅")
+    # Connect to DB and start background tasks inside a **startup callback**
+    async def startup_tasks(app):
+        await db.connect(DATABASE_URL)
+        logger.info("Database connected ✅")
+        asyncio.create_task(safe_task(referral_scheduler(app), "referral_scheduler"))
+        asyncio.create_task(safe_task(subscription_phase_watcher(app), "phase_watcher"))
+        asyncio.create_task(safe_task(start_anon_client(), "anon_client"))
+        logger.info("Background services started ✅")
 
-    # Start background tasks
-    asyncio.create_task(safe_task(referral_scheduler(app), "referral_scheduler"))
-    asyncio.create_task(safe_task(subscription_phase_watcher(app), "phase_watcher"))
-    asyncio.create_task(safe_task(start_anon_client(), "anon_client"))
-    logger.info("Background services started ✅")
-
-    # Run bot
-    await app.run_polling()
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    # Run polling — pass startup callback
+    app.run_polling(post_init=startup_tasks)
