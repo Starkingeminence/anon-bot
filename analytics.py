@@ -24,7 +24,7 @@ from telegram.ext import (
 # ==========================================
 REDIS_URL = os.getenv("REDIS_URL")
 
-redis_client = redis.from_url(
+r = redis.from_url(
     REDIS_URL,
     decode_responses=True
 )
@@ -48,19 +48,19 @@ def pulse_key(chat_id, key_type):
 
 def add_weekly_unique(chat_id, key_type, user_id):
     key = pulse_key(chat_id, key_type)
-    r.sadd(key, user_id)
-    r.expire(key, WEEK_SECONDS)
+    await r.sadd(key, user_id)
+    await r.expire(key, WEEK_SECONDS)
 
 def increment_weekly_counter(chat_id, key_type):
     key = pulse_key(chat_id, key_type)
-    r.incr(key)
-    r.expire(key, WEEK_SECONDS)
+    await r.incr(key)
+    await r.expire(key, WEEK_SECONDS)
 
 def mark_weekly_active_day(chat_id):
     today = datetime.date.today().isoformat()
     key = pulse_key(chat_id, "active_days")
-    r.sadd(key, today)
-    r.expire(key, WEEK_SECONDS)
+    await r.sadd(key, today)
+    await r.expire(key, WEEK_SECONDS)
 
 def get_weekly_data(chat_id):
     A_msg = r.scard(pulse_key(chat_id, "msg_users"))
@@ -159,16 +159,16 @@ def insight_key(chat_id, key):
     return f"insight:{chat_id}:{key}"
 
 def add_lifetime_activity(chat_id, user_id, points):
-    r.zincrby(insight_key(chat_id, "activity_points"), points, user_id)
+    await r.zincrby(insight_key(chat_id, "activity_points"), points, user_id)
 
 def increment_total_activity(chat_id, points):
-    r.incrbyfloat(insight_key(chat_id, "total_activity"), points)
+    await r.incrbyfloat(insight_key(chat_id, "total_activity"), points)
 
 def set_start_date_if_missing(chat_id):
     key = insight_key(chat_id, "start_date")
     if not r.get(key):
         today = datetime.date.today().isoformat()
-        r.set(key, today)
+        await r.set(key, today)
 
 # ---------- Lifetime Tracking ----------
 async def track_lifetime_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -216,7 +216,7 @@ async def insights(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    start_date = start_date_raw.decode()
+    start_date = start_date_raw
     total_activity = float(total_activity_raw or 0)
 
     top_user = r.zrevrange(
@@ -264,21 +264,21 @@ async def referral_scheduler(app):
     while True:
         now = int(time.time())
         for k in r.scan_iter("ref:*:active"):
-            chat_id = int(k.decode().split(":")[1])
+            chat_id = int(k.split(":")[1])
             settings = json.loads(r.get(ref_key(chat_id, "settings")))
             min_stay = settings["min_stay_hours"] * 3600
 
             for pending_key in r.scan_iter(ref_key(chat_id, "pending:*")):
-                new_user_id = int(pending_key.decode().split(":")[-1])
+                new_user_id = int(pending_key.split(":")[-1])
                 data = json.loads(r.get(pending_key))
                 joined_at = data["joined_at"]
 
                 if now - joined_at >= min_stay:
                     referrer_id = data["referrer"]
 
-                    r.zincrby(ref_key(chat_id, "score"), 1, referrer_id)
-                    r.sadd(ref_key(chat_id, "qualified_users"), new_user_id)
-                    r.delete(pending_key)
+                    await r.zincrby(ref_key(chat_id, "score"), 1, referrer_id)
+                    await r.sadd(ref_key(chat_id, "qualified_users"), new_user_id)
+                    await r.delete(pending_key)
 
                     try:
                         rank = r.zrevrank(ref_key(chat_id, "score"), referrer_id) + 1
