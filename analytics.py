@@ -28,15 +28,17 @@ r = redis.from_url(
     REDIS_URL,
     decode_responses=True
 )
+
 WEEK_SECONDS = 7 * 24 * 60 * 60
+
 
 # ==========================================
 # ---------- UTILITIES ----------
 # ==========================================
 def escape_markdown(text: str) -> str:
-    """Escape Telegram Markdown special chars"""
     escape_chars = r"_*[]()~`>#+-=|{}.!"
     return re.sub(rf'([{re.escape(escape_chars)}])', r'\\\1', text)
+
 
 # ==========================================
 # ---------------- PULSE -------------------
@@ -44,29 +46,34 @@ def escape_markdown(text: str) -> str:
 def pulse_key(chat_id, key_type):
     return f"pulse:{chat_id}:{key_type}"
 
-def add_weekly_unique(chat_id, key_type, user_id):
-    key = pulse_key(chat_id, key_type)
-    r.sadd(key, user_id)
-    r.expire(key, WEEK_SECONDS)
 
-def increment_weekly_counter(chat_id, key_type):
+async def add_weekly_unique(chat_id, key_type, user_id):
     key = pulse_key(chat_id, key_type)
-    r.incr(key)
-    r.expire(key, WEEK_SECONDS)
+    await r.sadd(key, user_id)
+    await r.expire(key, WEEK_SECONDS)
 
-def mark_weekly_active_day(chat_id):
+
+async def increment_weekly_counter(chat_id, key_type):
+    key = pulse_key(chat_id, key_type)
+    await r.incr(key)
+    await r.expire(key, WEEK_SECONDS)
+
+
+async def mark_weekly_active_day(chat_id):
     today = datetime.date.today().isoformat()
     key = pulse_key(chat_id, "active_days")
-    r.sadd(key, today)
-    r.expire(key, WEEK_SECONDS)
+    await r.sadd(key, today)
+    await r.expire(key, WEEK_SECONDS)
 
-def get_weekly_data(chat_id):
-    A_msg = r.scard(pulse_key(chat_id, "msg_users"))
-    A_react = r.scard(pulse_key(chat_id, "react_users"))
-    A_poll = r.scard(pulse_key(chat_id, "poll_users"))
-    M = int(r.get(pulse_key(chat_id, "message_count")) or 0)
-    active_days = r.scard(pulse_key(chat_id, "active_days"))
+
+async def get_weekly_data(chat_id):
+    A_msg = await r.scard(pulse_key(chat_id, "msg_users"))
+    A_react = await r.scard(pulse_key(chat_id, "react_users"))
+    A_poll = await r.scard(pulse_key(chat_id, "poll_users"))
+    M = int(await r.get(pulse_key(chat_id, "message_count")) or 0)
+    active_days = await r.scard(pulse_key(chat_id, "active_days"))
     return A_msg, A_react, A_poll, M, active_days
+
 
 def calculate_pulse(G, A_msg, A_react, A_poll, M, active_days):
     effective_active = A_msg + (0.5 * A_react) + (0.5 * A_poll)
@@ -83,8 +90,13 @@ def calculate_pulse(G, A_msg, A_react, A_poll, M, active_days):
             engagement_factor = max(engagement_factor - 0.2, 0)
 
     consistency = active_days / 7
-    pulse_score = 100 * (0.7 * participation_score + 0.2 * engagement_factor + 0.1 * consistency)
+    pulse_score = 100 * (
+        0.7 * participation_score +
+        0.2 * engagement_factor +
+        0.1 * consistency
+    )
     return round(pulse_score, 2)
+
 
 def get_pulse_verdict(score, total_messages):
     if total_messages == 0:
@@ -97,6 +109,7 @@ def get_pulse_verdict(score, total_messages):
         return "🟠 Weak"
     return "🔵 Faint"
 
+
 # ---------- Weekly Tracking ----------
 async def track_weekly_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
@@ -104,40 +117,52 @@ async def track_weekly_messages(update: Update, context: ContextTypes.DEFAULT_TY
         return
     if message.text and message.text.startswith("/"):
         return
+
     chat_id = update.effective_chat.id
     user_id = message.from_user.id
-    add_weekly_unique(chat_id, "msg_users", user_id)
-    increment_weekly_counter(chat_id, "message_count")
-    mark_weekly_active_day(chat_id)
+
+    await add_weekly_unique(chat_id, "msg_users", user_id)
+    await increment_weekly_counter(chat_id, "message_count")
+    await mark_weekly_active_day(chat_id)
+
 
 async def track_weekly_reactions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message_reaction:
         user = update.message_reaction.user
         if user and not user.is_bot:
             chat_id = update.effective_chat.id
-            add_weekly_unique(chat_id, "react_users", user.id)
-            mark_weekly_active_day(chat_id)
+            await add_weekly_unique(chat_id, "react_users", user.id)
+            await mark_weekly_active_day(chat_id)
+
 
 async def track_weekly_polls(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.poll_answer:
         user = update.poll_answer.user
         if user and not user.is_bot:
             chat_id = update.effective_chat.id
-            add_weekly_unique(chat_id, "poll_users", user.id)
-            mark_weekly_active_day(chat_id)
+            await add_weekly_unique(chat_id, "poll_users", user.id)
+            await mark_weekly_active_day(chat_id)
+
 
 # ---------- /pulse ----------
 async def pulse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     cooldown_key = pulse_key(chat_id, "last_pulse")
-    if r.get(cooldown_key):
-        await update.message.reply_text("⏳ Pulse can only be used once every 7 days.")
+
+    if await r.get(cooldown_key):
+        await update.message.reply_text(
+            "⏳ Pulse can only be used once every 7 days."
+        )
         return
+
     G = await context.bot.get_chat_member_count(chat_id)
-    A_msg, A_react, A_poll, M, active_days = get_weekly_data(chat_id)
+    A_msg, A_react, A_poll, M, active_days = await get_weekly_data(chat_id)
+
     score = calculate_pulse(G, A_msg, A_react, A_poll, M, active_days)
     verdict = get_pulse_verdict(score, M)
-    r.setex(cooldown_key, WEEK_SECONDS, 1)
+
+    await r.setex(cooldown_key, WEEK_SECONDS, 1)
+
     await update.message.reply_text(
         f"📊 Pulse Report\n\n"
         f"Score: {score}/100\n"
@@ -150,23 +175,28 @@ async def pulse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Active Days: {active_days}/7"
     )
 
+
 # ==========================================
 # ---------------- INSIGHTS ----------------
 # ==========================================
 def insight_key(chat_id, key):
     return f"insight:{chat_id}:{key}"
 
-def add_lifetime_activity(chat_id, user_id, points):
-    r.zincrby(insight_key(chat_id, "activity_points"), points, user_id)
 
-def increment_total_activity(chat_id, points):
-    r.incrbyfloat(insight_key(chat_id, "total_activity"), points)
+async def add_lifetime_activity(chat_id, user_id, points):
+    await r.zincrby(insight_key(chat_id, "activity_points"), points, user_id)
 
-def set_start_date_if_missing(chat_id):
+
+async def increment_total_activity(chat_id, points):
+    await r.incrbyfloat(insight_key(chat_id, "total_activity"), points)
+
+
+async def set_start_date_if_missing(chat_id):
     key = insight_key(chat_id, "start_date")
-    if not r.get(key):
+    if not await r.get(key):
         today = datetime.date.today().isoformat()
-        r.set(key, today)
+        await r.set(key, today)
+
 
 # ---------- Lifetime Tracking ----------
 async def track_lifetime_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -175,29 +205,34 @@ async def track_lifetime_messages(update: Update, context: ContextTypes.DEFAULT_
         return
     if message.text and message.text.startswith("/"):
         return
+
     chat_id = update.effective_chat.id
     user_id = message.from_user.id
-    set_start_date_if_missing(chat_id)
-    add_lifetime_activity(chat_id, user_id, 1.0)
-    increment_total_activity(chat_id, 1.0)
+
+    await set_start_date_if_missing(chat_id)
+    await add_lifetime_activity(chat_id, user_id, 1.0)
+    await increment_total_activity(chat_id, 1.0)
+
 
 async def track_lifetime_reactions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message_reaction:
         user = update.message_reaction.user
         if user and not user.is_bot:
             chat_id = update.effective_chat.id
-            set_start_date_if_missing(chat_id)
-            add_lifetime_activity(chat_id, user.id, 0.5)
-            increment_total_activity(chat_id, 0.5)
+            await set_start_date_if_missing(chat_id)
+            await add_lifetime_activity(chat_id, user.id, 0.5)
+            await increment_total_activity(chat_id, 0.5)
+
 
 async def track_lifetime_polls(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.poll_answer:
         user = update.poll_answer.user
         if user and not user.is_bot:
             chat_id = update.effective_chat.id
-            set_start_date_if_missing(chat_id)
-            add_lifetime_activity(chat_id, user.id, 0.5)
-            increment_total_activity(chat_id, 0.5)
+            await set_start_date_if_missing(chat_id)
+            await add_lifetime_activity(chat_id, user.id, 0.5)
+            await increment_total_activity(chat_id, 0.5)
+
 
 # ---------- /insights ----------
 async def insights(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -205,19 +240,18 @@ async def insights(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = chat.id
     group_name = chat.title or "This Group"
 
-    start_date_raw = r.get(insight_key(chat_id, "start_date"))
-    total_activity_raw = r.get(insight_key(chat_id, "total_activity"))
+    start_date = await r.get(insight_key(chat_id, "start_date"))
+    total_activity_raw = await r.get(insight_key(chat_id, "total_activity"))
 
-    if not start_date_raw:
+    if not start_date:
         await update.message.reply_text(
             f"📊 {group_name} — Insight\n\nNo historical data yet."
         )
         return
 
-    start_date = start_date_raw
     total_activity = float(total_activity_raw or 0)
 
-    top_user = r.zrevrange(
+    top_user = await r.zrevrange(
         insight_key(chat_id, "activity_points"),
         0,
         0,
@@ -232,8 +266,9 @@ async def insights(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    user_id_bytes, points = top_user[0]
-    user_id = int(user_id_bytes.decode())
+    user_id, points = top_user[0]
+    user_id = int(user_id)
+
     percentage = (points / total_activity) * 100
 
     try:
@@ -252,74 +287,85 @@ async def insights(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="MarkdownV2"
     )
 
+
 # ==========================================
 # ---------------- REFERRAL ----------------
 # ==========================================
 def ref_key(chat_id, suffix):
     return f"ref:{chat_id}:{suffix}"
 
+
 async def referral_scheduler(app):
     while True:
         now = int(time.time())
-        for k in r.scan_iter("ref:*:active"):
+
+        async for k in r.scan_iter("ref:*:active"):
             chat_id = int(k.split(":")[1])
-            settings = json.loads(r.get(ref_key(chat_id, "settings")))
+
+            settings_raw = await r.get(ref_key(chat_id, "settings"))
+            if not settings_raw:
+                continue
+
+            settings = json.loads(settings_raw)
             min_stay = settings["min_stay_hours"] * 3600
 
-            for pending_key in r.scan_iter(ref_key(chat_id, "pending:*")):
-                new_user_id = int(pending_key.split(":")[-1])
-                data = json.loads(r.get(pending_key))
+            async for pending_key in r.scan_iter(ref_key(chat_id, "pending:*")):
+                data_raw = await r.get(pending_key)
+                if not data_raw:
+                    continue
+
+                data = json.loads(data_raw)
                 joined_at = data["joined_at"]
 
                 if now - joined_at >= min_stay:
                     referrer_id = data["referrer"]
+                    new_user_id = int(pending_key.split(":")[-1])
 
                     await r.zincrby(ref_key(chat_id, "score"), 1, referrer_id)
                     await r.sadd(ref_key(chat_id, "qualified_users"), new_user_id)
                     await r.delete(pending_key)
 
                     try:
-                        rank = r.zrevrank(ref_key(chat_id, "score"), referrer_id) + 1
+                        rank = await r.zrevrank(ref_key(chat_id, "score"), referrer_id)
+                        total = await r.zscore(ref_key(chat_id, "score"), referrer_id)
+
                         await app.bot.send_message(
                             referrer_id,
                             f"🎉 Qualified Referral!\n"
-                            f"Total: {int(r.zscore(ref_key(chat_id,'score'), referrer_id))}\n"
-                            f"Rank: #{rank}"
+                            f"Total: {int(total)}\n"
+                            f"Rank: #{rank + 1}"
                         )
                     except:
                         pass
+
         await asyncio.sleep(300)
 
-# Track user joins / new members
+
+# Track user joins
 async def track_joins(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_member: ChatMemberUpdated = update.chat_member
     user = chat_member.new_chat_member.user
+
     if user.is_bot:
         return
-    chat_id = update.effective_chat.id
 
-    # Only track new members, not leaves or kicks
     if chat_member.new_chat_member.status == "member":
-        print(f"User {user.id} joined chat {chat_id}")
-        # Optional: add referral or welcome logic here
+        print(f"User {user.id} joined chat {update.effective_chat.id}")
+
 
 # ==========================================
 # ----------- REGISTER HANDLERS ------------
 # ==========================================
 def register_analytics_handlers(app):
-    # Weekly tracking
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, track_weekly_messages))
     app.add_handler(MessageReactionHandler(track_weekly_reactions))
     app.add_handler(PollHandler(track_weekly_polls))
 
-    # Lifetime tracking
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, track_lifetime_messages))
     app.add_handler(MessageReactionHandler(track_lifetime_reactions))
     app.add_handler(PollHandler(track_lifetime_polls))
-    
-    # Commands
+
     app.add_handler(CommandHandler("pulse", pulse))
     app.add_handler(CommandHandler("insights", insights))
 
-    # Referral join tracking
     app.add_handler(ChatMemberHandler(track_joins, ChatMemberHandler.CHAT_MEMBER))
