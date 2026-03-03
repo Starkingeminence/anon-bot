@@ -10,6 +10,8 @@ from games import register_games_handlers
 from moderation import register_moderation_handlers
 from analytics import register_analytics_handlers, referral_scheduler
 from anon_messaging import start_anon_client
+from threading import Thread
+from flask import Flask
 
 # Logging
 logging.basicConfig(
@@ -21,6 +23,22 @@ logger = logging.getLogger(__name__)
 DATABASE_URL = os.getenv("DATABASE_URL")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
+app = Flask(__name__)
+
+@app.route('/')
+def health_check():
+    return "Bot is alive!", 200
+
+def run_web():
+    # Render provides the PORT via environment variable
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
+if __name__ == "__main__":
+    # Start the web server in a separate thread
+    Thread(target=run_web, daemon=True).start()
+    
+    # ... your existing bot startup code ...
 
 async def safe_task(coro, name):
     try:
