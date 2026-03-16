@@ -137,12 +137,28 @@ async def handle_duplicate_spam(group_id, user_id, msg_hash, message_obj, contex
                 spam_offenses[(group_id, user_id)] = 1
                 await message_obj.delete()
                 await mute_user(group_id, user_id, context, SPAM_FIRST_MUTE)
+
+                await context.bot.send_message(
+                    chat_id=group_id,
+                    text=f"🚫 User <a href='tg://user?id={user_id}'>triggered spam protection</a>.\n"
+                    f"Reason: repeated duplicate messages.",
+                    parse_mode="HTML"
+                )
+
                 return "first_mute"
             # Second offense → ban
             elif spam_offenses.get((group_id, user_id), 0) == 1:
                 spam_offenses[(group_id, user_id)] = 2
                 await message_obj.delete()
                 await ban_user(message_obj.chat_id, user_id, context)
+
+                await context.bot.send_message(
+                   chat_id=group_id,
+                   text=f"⛔ User <a href='tg://user?id={user_id}'>banned automatically</a>.\n"
+                   f"Reason: repeated spam offenses.",
+                   parse_mode="HTML"
+                )
+
                 return "second_ban"
     else:
         recent_messages[key] = (now, 1)
@@ -220,13 +236,20 @@ async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("You must provide a reason.")
         return
 
+    reason = " ".join(context.args)
+
     target = update.message.reply_to_message.from_user
+    
     await update.effective_chat.restrict_member(
         target.id,
         ChatPermissions(can_send_messages=False)
     )
-    await update.message.reply_text(f"🔇 {target.mention_html()} muted.",
-                                    parse_mode="HTML")
+    
+    await update.message.reply_text(
+        f"🔇 {target.mention_html()} muted.\n"
+        f"Reason: {reason}",
+        parse_mode="HTML"
+    )
 
 
 async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -238,11 +261,17 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("You must provide a reason.")
         return
 
-    target = update.message.reply_to_message.from_user
-    await update.effective_chat.ban_member(target.id)
-    await update.message.reply_text(f"⛔ {target.mention_html()} banned.",
-                                    parse_mode="HTML")
+    reason = " ".join(context.args)
 
+    target = update.message.reply_to_message.from_user
+    
+    await update.effective_chat.ban_member(target.id)
+    
+    await update.message.reply_text(
+        f"⛔ {target.mention_html()} banned.\n"
+        f"Reason: {reason}",
+        parse_mode="HTML"
+    )
 
 async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.reply_to_message:
@@ -253,10 +282,15 @@ async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("You must provide a reason.")
         return
 
-    target = update.message.reply_to_message.from_user
-    await update.message.reply_text(f"⚠️ {target.mention_html()} warned.",
-                                    parse_mode="HTML")
+    reason = " ".join(context.args)
 
+    target = update.message.reply_to_message.from_user
+    
+    await update.message.reply_text(
+    f"⚠️ {target.mention_html()} warned.\n"
+    f"Reason: {reason}",
+    parse_mode="HTML"
+    )
 
 async def kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.reply_to_message:
@@ -266,11 +300,19 @@ async def kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("You must provide a reason.")
         return
+        
+    reason = " ".join(context.args)
 
     target = update.message.reply_to_message.from_user
-    await update.message.reply_text(f"⚠️ {target.mention_html()} kicked.",
-                                    parse_mode="HTML")
-
+    
+    await update.effective_chat.ban_member(target.id)
+    await update.effective_chat.unban_member(target.id)
+    
+    await update.message.reply_text(
+    f"👢 {target.mention_html()} kicked.\n"
+    f"Reason: {reason}",
+    parse_mode="HTML"
+    )
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.reply_to_message:
         await update.message.reply_text("Reply to a user to check their status.")
@@ -287,6 +329,14 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML"
         )
         return
+
+   await update.message.reply_text(
+    f"📊 Status for {target.mention_html()}\n"
+    f"Level: {penalty['level']}\n"
+    f"Reason: {penalty['reason']}\n"
+    f"Timestamp: {penalty['timestamp']}",
+    parse_mode="HTML"
+   )
 
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.reply_to_message:
@@ -305,20 +355,6 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     })
 
     await update.message.reply_text("🚨 Report submitted to admins.")
-
-    await update.message.reply_text(
-        f"📊 Status for {target.mention_html()}\n"
-        f"Level: {penalty['level']}\n"
-        f"Reason: {penalty['reason']}\n"
-        f"Timestamp: {penalty['timestamp']}",
-        parse_mode="HTML"
-    )
-    
-    target = update.message.reply_to_message.from_user
-    await update.effective_chat.ban_member(target.id)
-    await update.effective_chat.unban_member(target.id)
-    await update.message.reply_text(f"👢 {target.mention_html()} kicked.",
-                                    parse_mode="HTML")
 
 
 # -----------------------------
