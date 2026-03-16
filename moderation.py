@@ -148,7 +148,7 @@ async def handle_duplicate_spam(group_id, user_id, msg_hash, message_obj, contex
         recent_messages[key] = (now, 1)
     return None
 
-async def mute_user(chat_id, user_id, context, minutes=5):
+async def mute_user(chat_id, user_id, context, 5):
     until = datetime.utcnow() + timedelta(minutes=minutes)
 
     await context.bot.restrict_chat_member(
