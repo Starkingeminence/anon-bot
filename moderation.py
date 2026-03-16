@@ -142,7 +142,7 @@ async def handle_duplicate_spam(group_id, user_id, msg_hash, message_obj, contex
             elif spam_offenses.get((group_id, user_id), 0) == 1:
                 spam_offenses[(group_id, user_id)] = 2
                 await message_obj.delete()
-                await ban_user(message_obj.chat_id, user_id)
+                await ban_user(message_obj.chat_id, user_id, context)
                 return "second_ban"
     else:
         recent_messages[key] = (now, 1)
@@ -174,7 +174,7 @@ async def moderation_guard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Duplicate spam
     msg_hash = hash_message(text)
-    spam_result = await handle_duplicate_spam(chat_id, user.id, msg_hash, update.message)
+    spam_result = await handle_duplicate_spam(chat_id, user.id, msg_hash, update.message, context)
     if spam_result:
         return
 
@@ -217,8 +217,8 @@ async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-    await update.message.reply_text("You must provide a reason.")
-    return
+        await update.message.reply_text("You must provide a reason.")
+        return
 
     target = update.message.reply_to_message.from_user
     await update.effective_chat.restrict_member(
@@ -235,8 +235,8 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-    await update.message.reply_text("You must provide a reason.")
-    return
+        await update.message.reply_text("You must provide a reason.")
+        return
 
     target = update.message.reply_to_message.from_user
     await update.effective_chat.ban_member(target.id)
@@ -250,8 +250,8 @@ async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-    await update.message.reply_text("You must provide a reason.")
-    return
+        await update.message.reply_text("You must provide a reason.")
+        return
 
     target = update.message.reply_to_message.from_user
     await update.message.reply_text(f"⚠️ {target.mention_html()} warned.",
@@ -264,8 +264,8 @@ async def kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-    await update.message.reply_text("You must provide a reason.")
-    return
+        await update.message.reply_text("You must provide a reason.")
+        return
 
     target = update.message.reply_to_message.from_user
     await update.message.reply_text(f"⚠️ {target.mention_html()} kicked.",
