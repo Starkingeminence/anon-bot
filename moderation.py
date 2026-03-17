@@ -274,6 +274,33 @@ async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML"
     )
 
+async def dmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.reply_to_message:
+        await update.message.reply_text("Reply to a user to mute them.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("You must provide a reason.")
+        return
+
+    reason = " ".join(context.args)
+    target_msg = update.message.reply_to_message
+    target = target_msg.from_user
+
+    # delete offending message
+    await target_msg.delete()
+
+    # mute
+    await update.effective_chat.restrict_member(
+        target.id,
+        ChatPermissions(can_send_messages=False)
+    )
+
+    await update.message.reply_text(
+        f"🔇 {target.mention_html()} muted.\nReason: {reason}",
+        parse_mode="HTML"
+    )
+
 
 async def unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.reply_to_message:
@@ -336,6 +363,30 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"⛔ {target.mention_html()} banned.\n"
         f"Reason: {reason}",
+        parse_mode="HTML"
+    )
+
+async def dban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.reply_to_message:
+        await update.message.reply_text("Reply to a user to ban them.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("You must provide a reason.")
+        return
+
+    reason = " ".join(context.args)
+    target_msg = update.message.reply_to_message
+    target = target_msg.from_user
+
+    # delete offending message
+    await target_msg.delete()
+
+    # ban
+    await update.effective_chat.ban_member(target.id)
+
+    await update.message.reply_text(
+        f"⛔ {target.mention_html()} banned.\nReason: {reason}",
         parse_mode="HTML"
     )
 
