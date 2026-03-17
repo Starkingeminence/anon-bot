@@ -56,6 +56,13 @@ async def get_user(user_id: int):
     _users_cache[user_id] = user
     return user
 
+async def get_user_id_by_username(username: str):
+    result = await db.fetchrow(
+        "SELECT user_id FROM users WHERE username=$1",
+        username
+    )
+    return result["user_id"] if result else None
+
 # -----------------------------
 # List all users
 # -----------------------------
