@@ -21,7 +21,7 @@ import hashlib
 from datetime import datetime, timedelta
 from telegram import Update, ChatPermissions
 from telegram.ext import ContextTypes, CommandHandler, MessageHandler, filters
-from users import add_user
+from users import add_user, get_user_id_by_username
 
 # -----------------------------
 # CONFIGURABLE PARAMETERS
@@ -186,6 +186,7 @@ async def moderation_guard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = update.effective_chat.id
     user = update.effective_user
+    await add_user(user.id, user.username)
     text = (update.message.text or "").strip()
 
     # Duplicate spam
@@ -197,9 +198,18 @@ async def moderation_guard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Blacklist check
     if await is_blacklisted(text, chat_id):
         await update.message.delete()
-        await mute_user(chat_id, user.id, 5, reason="Blacklist word")
-        return
 
+        await mute_user(chat_id, user.id, context, 5)
+
+        await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"🚫 <a href='tg://user?id={user.id}'>User</a> muted.\n"
+             f"Reason: Blacklisted word.",
+        parse_mode="HTML"
+    )
+
+        return
+        
     # AI Semantic Blacklist (Pro+)
     settings = group_settings.get(chat_id, {})
     ai_enabled = settings.get("ai_enabled", False)
@@ -208,7 +218,12 @@ async def moderation_guard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ai_result = await analyze_ai_blacklist(text, chat_id)
         if ai_result and ai_result.get("confidence", 0) >= AI_CONF_THRESHOLD:
             await update.message.delete()
-            await mute_user(chat_id, user.id, 5, reason=f"AI detected: {ai_result['concept']}")
+            await mute_user(chat_id, user.id, context, 5)
+            await context.bot.send_message(
+               chat_id=chat_id,
+               text=f"🤖 User muted.\nReason: AI detected prohibited content.",
+               parse_mode="HTML"
+            )
             return
 
     # English-only enforcement (Pro+)
@@ -221,7 +236,13 @@ async def moderation_guard(update: Update, context: ContextTypes.DEFAULT_TYPE):
             warning_text = await get_translated_warning(lang)
             await update.message.reply_text(warning_text)
             if level >= ENGLISH_WARN_THRESHOLD:
-                await mute_user(chat_id, user.id, 5, reason="Repeated non-English messages")
+                await mute_user(chat_id, user.id, context, 5)
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"🚫 <a href='tg://user?id={user.id}'>User</a> muted.\n"
+                    f"Reason: Not communicating in English.",
+                    parse_mode="HTML"
+                )
             return
 
 # -----------------------------
@@ -239,6 +260,8 @@ async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reason = " ".join(context.args)
 
     target = update.message.reply_to_message.from_user
+
+    await add_user(target.id, target.username)
     
     await update.effective_chat.restrict_member(
         target.id,
@@ -250,6 +273,47 @@ async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Reason: {reason}",
         parse_mode="HTML"
     )
+
+
+async def unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.reply_to_message:
+        target = update.message.reply_to_message.from_user
+        user_id = target.id
+
+    elif context.args:
+        arg = context.args[0]
+
+        if arg.startswith("@"):
+            username = arg[1:]
+            user_id = await get_user_id_by_username(username)
+
+            if not user_id:
+                await update.message.reply_text(
+                    "User not found in database."
+                )
+                return
+        else:
+            await update.message.reply_text(
+                "Use @username or reply to a user."
+            )
+            return
+    else:
+        await update.message.reply_text(
+            "Reply to a user or use @username."
+        )
+        return
+
+    await update.effective_chat.restrict_member(
+        user_id,
+        ChatPermissions(
+            can_send_messages=True,
+            can_send_media_messages=True,
+            can_send_other_messages=True,
+            can_add_web_page_previews=True
+        )
+    )
+
+    await update.message.reply_text("🔊 User unmuted.")
 
 
 async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -264,6 +328,8 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reason = " ".join(context.args)
 
     target = update.message.reply_to_message.from_user
+
+    await add_user(target.id, target.username)
     
     await update.effective_chat.ban_member(target.id)
     
@@ -272,6 +338,40 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Reason: {reason}",
         parse_mode="HTML"
     )
+
+
+async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.reply_to_message:
+        target = update.message.reply_to_message.from_user
+        user_id = target.id
+
+    elif context.args:
+        arg = context.args[0]
+
+        if arg.startswith("@"):
+            username = arg[1:]
+            user_id = await get_user_id_by_username(username)
+
+            if not user_id:
+                await update.message.reply_text(
+                    "User not found in database."
+                )
+                return
+        else:
+            await update.message.reply_text(
+                "Use @username or reply to a user."
+            )
+            return
+    else:
+        await update.message.reply_text(
+            "Reply to a user or use @username."
+        )
+        return
+
+    await update.effective_chat.unban_member(user_id)
+
+    await update.message.reply_text("✅ User unbanned.")
+    
 
 async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.reply_to_message:
@@ -285,6 +385,8 @@ async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reason = " ".join(context.args)
 
     target = update.message.reply_to_message.from_user
+
+    await add_user(target.id, target.username)
     
     await update.message.reply_text(
     f"⚠️ {target.mention_html()} warned.\n"
@@ -304,6 +406,8 @@ async def kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reason = " ".join(context.args)
 
     target = update.message.reply_to_message.from_user
+
+    await add_user(target.id, target.username)
     
     await update.effective_chat.ban_member(target.id)
     await update.effective_chat.unban_member(target.id)
@@ -362,6 +466,8 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # -----------------------------
 def register_moderation_handlers(app):
     app.add_handler(CommandHandler("mute", mute))
+    app.add_handler(CommandHandler("unban", unban))
+    app.add_handler(CommandHandler("unmute", unmute))
     app.add_handler(CommandHandler("ban", ban))
     app.add_handler(CommandHandler("dmute", mute))
     app.add_handler(CommandHandler("dban", ban))
