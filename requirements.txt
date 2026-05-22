@@ -1,0 +1,36 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Acki Nacki DAO Community Bot — Python Dependencies
+# Stack: aiogram 3.x | asyncpg | redis-py | aiohttp | Render + Supabase + Upstash
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Telegram Bot Framework ────────────────────────────────────────────────────
+aiogram==3.13.1                  # Async Telegram Bot API framework (Webhook + FSM)
+
+# ── Web Server (Webhook Host + /health endpoint) ──────────────────────────────
+aiohttp==3.10.5                  # Async HTTP server; binds to Render's $PORT
+
+# ── PostgreSQL (Supabase) ─────────────────────────────────────────────────────
+asyncpg==0.29.0                  # High-performance async PostgreSQL driver
+                                 # Uses global create_pool() — never per-message open/close
+
+# ── Redis (Upstash) ───────────────────────────────────────────────────────────
+redis==5.0.8                     # redis-py with asyncio support (redis.asyncio)
+                                 # Stores: cooldowns, spam hashes, game sessions (all TTL-bound)
+
+# ── Environment & Configuration ───────────────────────────────────────────────
+python-dotenv==1.0.1             # Loads .env for local development
+
+# ── Language Detection (English-Only Rule — NO external API) ─────────────────
+langdetect==1.0.9                # Lightweight local NLP; no network calls
+                                 # PRD §7: >70% confidence threshold before action
+
+# ── Scheduling (Midnight Reset Cron) ─────────────────────────────────────────
+apscheduler==3.10.4              # In-process async scheduler for 00:00 UTC daily reset
+                                 # and monthly payout calculations
+
+# ── Cryptography / Wallet (Hot Wallet interactions) ───────────────────────────
+# NOTE: Acki Nacki RPC calls will use aiohttp directly against the GraphQL endpoint.
+# No third-party blockchain SDK is added to stay on zero-cost free tier.
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+cachetools==5.3.3                # In-memory LRU cache for language_code → translation dict
