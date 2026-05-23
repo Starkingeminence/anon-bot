@@ -10,7 +10,7 @@ aiogram==3.13.1                  # Async Telegram Bot API framework (Webhook + F
 aiohttp==3.10.5                  # Async HTTP server; binds to Render's $PORT
 
 # ── PostgreSQL (Supabase) ─────────────────────────────────────────────────────
-asyncpg==0.29.0                  # High-performance async PostgreSQL driver
+asyncpg==0.31.0                  # High-performance async PostgreSQL driver
                                  # Uses global create_pool() — never per-message open/close
 
 # ── Redis (Upstash) ───────────────────────────────────────────────────────────
