@@ -385,7 +385,6 @@ async def on_startup(app: web.Application) -> None:
 async def on_shutdown(app: web.Application) -> None:
     """
     Graceful teardown — called by aiohttp on SIGTERM.
-    Order matters: stop accepting updates first, then close connections.
     """
     bot: Bot = app["bot"]
 
@@ -395,9 +394,10 @@ async def on_shutdown(app: web.Application) -> None:
         scheduler.shutdown(wait=True)
         logger.info("🔌 APScheduler stopped")
 
-    # Deregister webhook — Telegram stops sending updates immediately
-    await bot.delete_webhook(drop_pending_updates=False)
-    logger.info("🔌 Webhook deleted")
+    # 🚨 CRITICAL FIX: We no longer delete the webhook here!
+    # This prevents the old container from assassinating the webhook 
+    # connection of the new container during zero-downtime deploys.
+    logger.info("🔌 Webhook left intact for the active instance")
 
     # Close DB pool — drains all active connections cleanly
     db_pool: asyncpg.Pool = app.get("db_pool")
