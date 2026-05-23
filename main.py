@@ -204,7 +204,7 @@ async def scheduled_monthly_payout(pool: asyncpg.Pool, bot: Bot) -> None:
     Phase 4 (treasury module). This stub logs the trigger so the scheduler
     wiring is testable from Phase 1.
     """
-    logger.info("⏰ Monthly payout triggered — deferring to treasury module (Phase 4)")
+    logger.info("⏰ Monthly  triggered — deferring to treasury module (Phase 4)")
     # TODO (Phase 4): import and call treasury.execute_monthly_payout(pool, bot)
 
 
@@ -294,44 +294,21 @@ async def health_handler(request: web.Request) -> web.Response:
 def build_dispatcher(redis_url: str) -> Dispatcher:
     """
     Construct the root Dispatcher.
-
-    RedisStorage drives aiogram's FSM — quiz state, game sessions, and
-    /anon flows all use FSM states persisted in Upstash with automatic TTL.
     """
     storage = RedisStorage.from_url(redis_url)
     dp = Dispatcher(storage=storage)
 
-    # ── Phase 2: Chat Economy & Point Accumulation ────────────────────────────
-    # from handlers.economy import router as economy_router
-    # dp.include_router(economy_router)
+    # ── Phase 2: Active Routers ───────────────────────────────────────────────
+    from routers.admin import router as admin_router
+    from routers.economy import router as economy_router
 
-    # ── Phase 3: Anti-Spam, Moderation & Ghost Moderation ────────────────────
-    # from handlers.moderation import router as moderation_router
-    # dp.include_router(moderation_router)
-
-    # ── Phase 3: Verification Flow (new user quiz) ────────────────────────────
-    # from handlers.verification import router as verification_router
-    # dp.include_router(verification_router)
-
-    # ── Phase 3: Anonymous Messaging (/anon) ─────────────────────────────────
-    # from handlers.anon import router as anon_router
-    # dp.include_router(anon_router)
-
-    # ── Phase 4: Treasury (/treasury command + monthly payout) ───────────────
-    # from handlers.treasury import router as treasury_router
-    # dp.include_router(treasury_router)
-
-    # ── Phase 5: Game Engine (Fastest Fingers, Q&A, Guess the Number) ────────
-    # from handlers.games import router as games_router
-    # dp.include_router(games_router)
-
-    # ── Phase 2: Admin Commands (/on_duty, /off_duty, /warn, /mute, /ban) ────
-    # from handlers.admin import router as admin_router
-    # dp.include_router(admin_router)
+    # ORDER MATTERS: Admin must be registered FIRST so it catches commands 
+    # before the economy router catches standard chat messages.
+    dp.include_router(admin_router)
+    dp.include_router(economy_router)
 
     logger.info("✅ Dispatcher built with RedisStorage FSM")
     return dp
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # AIOHTTP LIFECYCLE HOOKS
@@ -363,8 +340,10 @@ async def on_startup(app: web.Application) -> None:
     await verify_schema(db_pool)
 
     # ── 4. Inject into Dispatcher workflow_data ───────────────────────────────
+    # Fetch the bot's own ID so the admin router knows when it's being replied to
+    me = await bot.get_me()
+
     # Handlers receive these as keyword arguments:
-    #   async def handle_message(message, db_pool, redis, admin_ids, ...):
     dp.workflow_data.update(
         {
             "db_pool": db_pool,
@@ -375,6 +354,7 @@ async def on_startup(app: web.Application) -> None:
             "hot_wallet": HOT_WALLET_ADDRESS,
             "multisig_wallet": MULTISIG_WALLET_ADDRESS,
             "acki_nacki_rpc": ACKI_NACKI_RPC,
+            "bot_id": me.id,
         }
     )
 
