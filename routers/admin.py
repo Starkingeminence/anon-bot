@@ -305,7 +305,7 @@ async def cmd_unmute(message: Message, bot: Bot, pool, redis):
 
 
 # ===========================================================================
-# PHASE 3 NEW: /trace — Glass-Break Protocol (fully implemented)
+# PHASE 3 NEW: /trace — Glass-Break Protocol (Publicly Transparent)
 # ===========================================================================
 @router.message(
     Command("trace"),
@@ -314,43 +314,20 @@ async def cmd_unmute(message: Message, bot: Bot, pool, redis):
 )
 async def cmd_trace(message: Message, bot: Bot, pool, redis):
     """
-    Glass-break deanonymisation command.
-
+    Public glass-break deanonymisation command.
     Usage (admin replies to an anon message): /trace <reason>
-
-    Flow:
-    1. Verify caller is an admin.
-    2. Look up the replied-to message_id in anon_logs to find real user_id.
-    3. DM the admin with the real identity — privately, never in public chat.
-    4. Log the trace access in penalties table for full audit trail.
-    5. Silently delete the /trace command from public chat immediately.
     """
     admin_id = message.from_user.id
 
     # --- Guard: real admin only ---
     if not await _is_admin(admin_id, bot, DAO_GROUP_ID):
-        try:
-            await message.delete()
-        except Exception:
-            pass
         return
 
-    # --- Guard: must be a reply ---
     target_msg = message.reply_to_message
-    if not target_msg:
-        await message.answer("⚠️ `/trace` must be a reply to an anonymous message.", parse_mode="Markdown")
-        return
-
     args = message.text.split(maxsplit=1)
     reason = args[1].strip() if len(args) > 1 else "No reason provided."
 
-    # --- Step 1: Delete /trace from public chat immediately ---
-    try:
-        await message.delete()
-    except Exception as exc:
-        log.warning("Could not delete /trace message: %s", exc)
-
-    # --- Step 2: Query anon_logs for the real author ---
+    # --- Step 1: Query anon_logs for the real author ---
     anon_msg_id = target_msg.message_id
     real_user_id: int | None = None
 
@@ -363,42 +340,43 @@ async def cmd_trace(message: Message, bot: Bot, pool, redis):
             real_user_id = row["user_id"]
 
     if not real_user_id:
-        # Message wasn't sent via /anon, or log was purged
-        await bot.send_message(
-            admin_id,
-            "⚠️ *Trace failed:* No anonymous log found for that message.\n"
-            "The message may not have been sent via `/anon`, or the log has expired.",
-            parse_mode="Markdown",
+        await message.reply(
+            "⚠️ <b>Trace failed:</b> No anonymous log found for that message.\n"
+            "The message may not have been sent via <code>/anon</code>, or the log has expired.",
+            parse_mode="HTML",
         )
         return
 
-    # --- Step 3: Fetch user details for the DM report ---
+    # --- Step 2: Fetch user details for the public report ---
     try:
         user_info = await bot.get_chat(real_user_id)
-        username_str = f"@{user_info.username}" if user_info.username else "_(no username)_"
+        username_str = f"@{user_info.username}" if user_info.username else "<i>(no username)</i>"
         full_name = user_info.full_name or "Unknown"
     except Exception:
-        username_str = "_(could not fetch)_"
+        username_str = "<i>(could not fetch)</i>"
         full_name = "Unknown"
 
-    # --- Step 4: DM the admin with the real identity ---
+        # --- Step 3: Send the trace report to the PUBLIC chat ---
     trace_report = (
-        f"🔍 *GLASS-BREAK — TRACE REPORT*\n"
+        f"🔍 <b>GLASS-BREAK — PUBLIC TRACE</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"Anon Message ID: `{anon_msg_id}`\n"
-        f"Real User ID: `{real_user_id}`\n"
-        f"Name: {full_name}\n"
-        f"Username: {username_str}\n"
-        f"Trace Reason: _{reason}_\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⚠️ This access has been logged in the audit database."
+        f"<b>Authorized by Admin:</b> {message.from_user.mention_html()}\n\n"
+        f"<b>Name:</b> {full_name}\n"
+        f"<b>Username:</b> {username_str}\n"
+        f"<b>Trace Reason:</b> <i>{reason}</i>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━"
     )
     try:
-        await bot.send_message(admin_id, trace_report, parse_mode="Markdown")
+        await message.reply(trace_report, parse_mode="HTML")
     except Exception as exc:
-        log.error("Could not DM trace report to admin %d: %s", admin_id, exc)
+        log.error("Could not send public trace report: %s", exc)
 
-    # --- Step 5: Log the trace access in penalties for accountability ---
+    try:
+        await message.reply(trace_report, parse_mode="HTML")
+    except Exception as exc:
+        log.error("Could not send public trace report: %s", exc)
+
+    # --- Step 4: Log the trace access in penalties for the backend audit trail ---
     async with pool.acquire() as conn:
         await conn.execute(
             """
@@ -407,11 +385,10 @@ async def cmd_trace(message: Message, bot: Bot, pool, redis):
             """,
             real_user_id,
             admin_id,
-            "warn",  # 'warn' is the closest valid action type per schema; extend enum if needed
-            f"[GLASS-BREAK /trace] Admin `{admin_id}` deanonymised message `{anon_msg_id}`. Reason: {reason}",
+            "warn",
+            f"[GLASS-BREAK /trace] Admin `{admin_id}` deanonymised message `{anon_msg_id}` publicly. Reason: {reason}",
             datetime.now(tz=timezone.utc),
         )
-
 
 # ---------------------------------------------------------------------------
 # Internal helper: resolve the real user_id from a message
