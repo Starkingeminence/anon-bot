@@ -21,7 +21,6 @@ router = Router()
 import os
 
 DAO_GROUP_ID: int = int(os.getenv("GROUP_ID", "0"))
-BOT_USERNAME: str = "YourActualBotUsername" # Put your bot's username here (without the @)
 
 # Pull the admin IDs from your .env file
 ADMIN_IDS: set[int] = {
