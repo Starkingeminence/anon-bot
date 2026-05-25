@@ -348,7 +348,7 @@ async def on_startup(app: web.Application) -> None:
     # Handlers receive these as keyword arguments:
     dp.workflow_data.update(
         {
-            "db_pool": db_pool,
+            "pool": db_pool,
             "redis": redis_client,
             "admin_ids": ADMIN_IDS,
             "group_id": GROUP_ID,
