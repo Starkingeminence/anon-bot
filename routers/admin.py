@@ -317,6 +317,12 @@ async def cmd_trace(message: Message, bot: Bot, pool, redis):
     Public glass-break deanonymisation command.
     Usage (admin replies to an anon message): /trace <reason>
     """
+    # 🚨 FIX: Lock the webhook to prevent double-fires from Telegram
+    lock_key = f"trace:lock:{message.message_id}"
+    if await redis.exists(lock_key):
+        return  # Silently drop the duplicate webhook fire
+    await redis.setex(lock_key, 60, "1")
+
     admin_id = message.from_user.id
 
     # --- Guard: real admin only ---
@@ -356,7 +362,7 @@ async def cmd_trace(message: Message, bot: Bot, pool, redis):
         username_str = "<i>(could not fetch)</i>"
         full_name = "Unknown"
 
-        # --- Step 3: Send the trace report to the PUBLIC chat ---
+    # --- Step 3: Send the trace report to the PUBLIC chat ---
     trace_report = (
         f"🔍 <b>GLASS-BREAK — PUBLIC TRACE</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -366,11 +372,6 @@ async def cmd_trace(message: Message, bot: Bot, pool, redis):
         f"<b>Trace Reason:</b> <i>{reason}</i>\n"
         f"━━━━━━━━━━━━━━━━━━━━━"
     )
-    try:
-        await message.reply(trace_report, parse_mode="HTML")
-    except Exception as exc:
-        log.error("Could not send public trace report: %s", exc)
-
     try:
         await message.reply(trace_report, parse_mode="HTML")
     except Exception as exc:
@@ -389,6 +390,7 @@ async def cmd_trace(message: Message, bot: Bot, pool, redis):
             f"[GLASS-BREAK /trace] Admin `{admin_id}` deanonymised message `{anon_msg_id}` publicly. Reason: {reason}",
             datetime.now(tz=timezone.utc),
         )
+
 
 # ---------------------------------------------------------------------------
 # Internal helper: resolve the real user_id from a message
