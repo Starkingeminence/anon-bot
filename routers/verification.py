@@ -555,9 +555,12 @@ async def anon_command(
         await message.answer("⏳ Please wait 15 seconds between anonymous messages.")
         return
 
+    # 🚨 FIX: Lock the door IMMEDIATELY to block Telegram webhook double-fires
+    await redis.setex(cooldown_key, ANON_COOLDOWN_SECONDS, "1")
+
     # Log & Send (Ensuring user exists to avoid Foreign Key crashes)
     async with pool.acquire() as conn:
-        # 1. Upsert user safely so the anon_log doesn't violate Foreign Keys
+        # 1. Upsert user safely
         await conn.execute(
             """
             INSERT INTO users (user_id, group_id, language_code, join_date)
@@ -567,7 +570,7 @@ async def anon_command(
             user_id, DAO_GROUP_ID, datetime.now(tz=timezone.utc)
         )
 
-        # 2. Forward to group (Switched to HTML to avoid Markdown crashes)
+        # 2. Forward to group
         sent = await bot.send_message(
             DAO_GROUP_ID,
             f"👻 <b>Anonymous message:</b>\n\n{anon_text}",
@@ -586,6 +589,4 @@ async def anon_command(
             datetime.now(tz=timezone.utc),
         )
 
-    # Set cooldown
-    await redis.setex(cooldown_key, ANON_COOLDOWN_SECONDS, "1")
     await message.answer("✅ Your anonymous message has been sent.")
