@@ -27,8 +27,15 @@ router = Router()
 # ---------------------------------------------------------------------------
 # Config constants
 # ---------------------------------------------------------------------------
-DAO_GROUP_ID: int = -1001234567890   # Your main group chat_id
-BOT_USERNAME: str = "YourBotUsername"  # Without @
+import os
+
+DAO_GROUP_ID: int = int(os.getenv("GROUP_ID", "0"))
+BOT_USERNAME: str = "YourActualBotUsername" # Put your bot's username here (without the @)
+
+# Pull the admin IDs from your .env file
+ADMIN_IDS: set[int] = {
+    int(x.strip()) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()
+}
 
 # Redis key helpers
 def _rkey_attempts(uid: int) -> str:
