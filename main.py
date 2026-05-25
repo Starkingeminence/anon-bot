@@ -301,11 +301,13 @@ def build_dispatcher(redis_url: str) -> Dispatcher:
     # ── Phase 2: Active Routers ───────────────────────────────────────────────
     from routers.admin import router as admin_router
     from routers.economy import router as economy_router
+    from routers.verification import router as verification_router
 
     # ORDER MATTERS: Admin must be registered FIRST so it catches commands 
     # before the economy router catches standard chat messages.
     dp.include_router(admin_router)
-    dp.include_router(economy_router)
+    dp.include_router(verification_router)  # ← insert here
+    dp.include_router(economy_router)       # spam caught before points awarded
 
     logger.info("✅ Dispatcher built with RedisStorage FSM")
     return dp
