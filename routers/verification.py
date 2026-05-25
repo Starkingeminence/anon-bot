@@ -544,7 +544,7 @@ async def anon_command(
     # Strip /anon prefix
     parts = text.split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip():
-        await message.answer("Usage: `/anon Your message here`", parse_mode="Markdown")
+        await message.answer("Usage: <code>/anon Your message here</code>", parse_mode="HTML")
         return
 
     anon_text = parts[1].strip()
@@ -555,15 +555,26 @@ async def anon_command(
         await message.answer("⏳ Please wait 15 seconds between anonymous messages.")
         return
 
-    # Forward to group
-    sent = await bot.send_message(
-        DAO_GROUP_ID,
-        f"👻 *Anonymous message:*\n\n{anon_text}",
-        parse_mode="Markdown",
-    )
-
-    # Log to anon_logs for /trace capability
+    # Log & Send (Ensuring user exists to avoid Foreign Key crashes)
     async with pool.acquire() as conn:
+        # 1. Upsert user safely so the anon_log doesn't violate Foreign Keys
+        await conn.execute(
+            """
+            INSERT INTO users (user_id, group_id, language_code, join_date)
+            VALUES ($1, $2, 'en', $3)
+            ON CONFLICT (user_id) DO NOTHING
+            """,
+            user_id, DAO_GROUP_ID, datetime.now(tz=timezone.utc)
+        )
+
+        # 2. Forward to group (Switched to HTML to avoid Markdown crashes)
+        sent = await bot.send_message(
+            DAO_GROUP_ID,
+            f"👻 <b>Anonymous message:</b>\n\n{anon_text}",
+            parse_mode="HTML",
+        )
+
+        # 3. Log to anon_logs
         await conn.execute(
             """
             INSERT INTO anon_logs (message_id, user_id, timestamp)
@@ -578,4 +589,3 @@ async def anon_command(
     # Set cooldown
     await redis.setex(cooldown_key, ANON_COOLDOWN_SECONDS, "1")
     await message.answer("✅ Your anonymous message has been sent.")
-
