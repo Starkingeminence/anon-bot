@@ -18,12 +18,15 @@ router = Router()
 # ---------------------------------------------------------------------------
 # Shared config — must match verification.py
 # ---------------------------------------------------------------------------
-DAO_GROUP_ID: int = -1001234567890  # Your main group chat_id
+import os
 
-# Admin IDs who are permitted to use glass-break commands.
-# Kept here rather than hard-coded inside the handler so a single edit
-# propagates everywhere. Alternatively, load from env / workflow_data.
-ADMIN_IDS: set[int] = {111111111, 222222222, 333333333, 444444444}
+DAO_GROUP_ID: int = int(os.getenv("GROUP_ID", "0"))
+BOT_USERNAME: str = "YourActualBotUsername" # Put your bot's username here (without the @)
+
+# Pull the admin IDs from your .env file
+ADMIN_IDS: set[int] = {
+    int(x.strip()) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()
+}
 
 
 # ---------------------------------------------------------------------------
