@@ -68,15 +68,16 @@ WEBHOOK_PATH: str = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL: str = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 
 PORT: int = int(os.getenv("PORT", "8080"))
-
 GROUP_ID: int = int(os.getenv("GROUP_ID", "0"))
 ADMIN_IDS: list[int] = [
     int(x.strip()) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()
 ]
-FOUNDER_WALLET: str = os.getenv("FOUNDER_WALLET", "")
-HOT_WALLET_ADDRESS: str = os.getenv("HOT_WALLET_ADDRESS", "")
-MULTISIG_WALLET_ADDRESS: str = os.getenv("MULTISIG_WALLET_ADDRESS", "")
-ACKI_NACKI_RPC: str = os.getenv("ACKI_NACKI_RPC", "https://mainnet.ackinacki.org/graphql")
+
+# Phase 4 Required Cryptographic & Network Variables (Strict Mode)
+FOUNDER_WALLET: str = _require("FOUNDER_WALLET")
+HOT_WALLET_ADDRESS: str = _require("HOT_WALLET_ADDRESS")
+MULTISIG_WALLET_ADDRESS: str = _require("MULTISIG_WALLET_ADDRESS")
+ACKI_NACKI_RPC: str = _require("ACKI_NACKI_RPC")
 
 # Supabase free tier supports ~15 direct connections. We cap at 8 to leave
 # headroom for migrations, Supabase Studio, and other tooling.
