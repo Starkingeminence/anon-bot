@@ -198,64 +198,117 @@ async def cmd_mute(message: Message, bot: Bot, pool, redis):
 
 
 # ---------------------------------------------------------------------------
-# /report — reply-lock enforced
+# /report — Silent Ghost Reporting with Owner Routing & Anti-Spam Cooldown
 # ---------------------------------------------------------------------------
 @router.message(Command("report"), F.chat.id == DAO_GROUP_ID)
 async def cmd_report(message: Message, bot: Bot, pool, redis):
+    user_id = message.from_user.id
+
+    # 1. Anti-Spam Throttle: Check 30-second report cooldown in Redis
+    cooldown_key = f"report:cooldown:{user_id}"
+    if await redis.exists(cooldown_key):
+        try:
+            # Silently delete the duplicate command to keep chat clean
+            await message.delete()
+        except Exception:
+            pass
+        return
+
+    # Set the 30-second throttle immediately
+    await redis.setex(cooldown_key, 30, "1")
+
+    # Handle misuse (no reply targeted)
     if not message.reply_to_message:
-        await message.answer(
-            "⚠️ `/report` must be used as a reply to the offending message.",
-            parse_mode="Markdown",
-        )
+        try:
+            await message.delete()
+            tip = await message.answer(
+                "💡 <i>To report, reply directly to the bad message with /report [reason]</i>", 
+                parse_mode="HTML"
+            )
+            await asyncio.sleep(5)
+            await tip.delete()
+        except Exception:
+            pass
         return
 
     target_msg = message.reply_to_message
-    reporter_id = message.from_user.id
+    target_user_id = target_msg.from_user.id if target_msg.from_user else 0
+    reason = message.text.split(maxsplit=1)[1].strip() if len(message.text.split()) > 1 else "No reason provided."
 
-    args = message.text.split(maxsplit=1)
-    reason = args[1] if len(args) > 1 else "No reason provided."
+    # 2. Public UX Confirmation (Flash & Delete)
+    # This prevents the user from spamming because they see instant feedback
+    try:
+        flash_msg = await message.reply(
+            "✅ <b>Report forwarded securely to administrators.</b>",
+            parse_mode="HTML"
+        )
+        # Give them 4 seconds to read it, then clean up the public group space
+        await asyncio.sleep(4)
+        await message.delete()
+        await flash_msg.delete()
+    except Exception:
+        pass
 
-    # Snapshot to DB immediately (prevents evidence deletion)
+    # 3. Snapshot straight to Supabase penalties table for immutable proof
     async with pool.acquire() as conn:
         await conn.execute(
             """
             INSERT INTO penalties (user_id, admin_id, action, reason, timestamp)
             VALUES ($1, $2, $3, $4, $5)
             """,
-            target_msg.from_user.id if target_msg.from_user else 0,
-            reporter_id,
+            target_user_id,
+            user_id,
             "warn",
-            f"[REPORT] {reason} | Original text: {(target_msg.text or '')[:300]}",
+            f"[SILENT-REPORT] {reason} | Text: {(target_msg.text or '')[:300]}",
             datetime.now(tz=timezone.utc),
         )
 
-    # Ping on-duty admins
-    on_duty: set[bytes] = await redis.smembers("admin:on_duty")
-    alert = (
-        f"🚨 *Report received*\n"
-        f"Reporter: `{reporter_id}`\n"
-        f"Reported message ID: `{target_msg.message_id}`\n"
-        f"Reason: {reason}"
+    # Build actionable notification details
+    clean_chat_id = str(DAO_GROUP_ID).replace("-100", "")
+    message_link = f"https://t.me/c/{clean_chat_id}/{target_msg.message_id}"
+    reporter_mention = message.from_user.mention_html(message.from_user.full_name)
+
+    # 4. Smart Routing Logic
+    # Check if the target being reported is an admin or the bot itself
+    is_target_admin = await _is_admin(target_user_id, bot, DAO_GROUP_ID) or (target_msg.from_user and target_msg.from_user.is_bot)
+
+    if is_target_admin:
+        # HIGH CLEARANCE CRIME: Route EXCLUSIVELY to you (the Owner / first ID in your ADMIN_IDS set)
+        owner_id = list(ADMIN_IDS)[0]  
+        alert_header = "🚨 <b>ADMIN COMPLAINT (OWNER-EYES ONLY)</b>\n⚠️ <i>An administrator was reported.</i>"
+        recipients = {owner_id}
+    else:
+        # Standard complaint: Route to all active on-duty admins
+        alert_header = "🚨 <b>INCOMING COMMUNITY REPORT</b>"
+        on_duty_bytes = await redis.smembers("admin:on_duty")
+        recipients = {int(uid) for uid in on_duty_bytes}
+
+    alert_body = (
+        f"{alert_header}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"<b>👥 Filed By:</b> {reporter_mention}\n"
+        f"<b>📝 Reason:</b> <i>{reason}</i>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔗 <a href='{message_link}'><b>👉 CLICK HERE TO VIEW TARGET MESSAGE 👈</b></a>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"⚡ <i>Investigate the message thread before executing enforcement.</i>"
     )
-    for admin_id_bytes in on_duty:
+
+    # Dispatch to the calculated recipients
+    for admin_to_alert in recipients:
         try:
-            await bot.send_message(int(admin_id_bytes), alert, parse_mode="Markdown")
+            await bot.send_message(
+                admin_to_alert, 
+                alert_body, 
+                parse_mode="HTML", 
+                disable_web_page_preview=True
+            )
         except Exception:
             pass
 
-    try:
-        await message.delete()
-    except Exception:
-        pass
-
-    await bot.send_message(
-        reporter_id,
-        "✅ Your report has been logged and forwarded to on-duty admins.",
-    )
-
 
 # ---------------------------------------------------------------------------
-# /unmute — manual admin override (used after verification lockout)
+# /unmute — Smart Admin Override (Supports Reply or @Username)
 # ---------------------------------------------------------------------------
 @router.message(Command("unmute"), F.chat.id == DAO_GROUP_ID)
 async def cmd_unmute(message: Message, bot: Bot, pool, redis):
@@ -265,12 +318,53 @@ async def cmd_unmute(message: Message, bot: Bot, pool, redis):
     if not await _is_admin(admin_id, bot, DAO_GROUP_ID):
         return
 
+    target_id: int | None = None
     args = message.text.split()
-    if len(args) < 2 or not args[1].isdigit():
-        await message.answer("Usage: `/unmute <user_id>`", parse_mode="Markdown")
+
+    # Scenario 1: Admin used it as a REPLY to a user's message
+    if message.reply_to_message:
+        # Resolve target (handles normal senders and /anon logs safely)
+        target_id = await _resolve_target(message.reply_to_message, pool)
+
+    # Scenario 2: Admin provided a username or raw ID as an argument (e.g., /unmute @username)
+    elif len(args) >= 2:
+        input_param = args[1].strip()
+        
+        if input_param.isdigit():
+            # If they actually provided a raw numeric ID, accept it as fallback
+            target_id = int(input_param)
+        elif input_param.startswith("@"):
+            # It's a username! Query Supabase to find the associated User ID
+            clean_username = input_param.replace("@", "").lower()
+            async with pool.acquire() as conn:
+                # Note: This assumes your DB logs usernames during message hooks.
+                # If username isn't cached, we look up via get_chat fallback below.
+                row = await conn.fetchrow(
+                    "SELECT user_id FROM users WHERE LOWER(username) = $1", 
+                    clean_username
+                )
+                if row:
+                    target_id = row["user_id"]
+            
+            # If username isn't in database yet, try asking Telegram directly
+            if not target_id:
+                try:
+                    chat_info = await bot.get_chat(input_param)
+                    target_id = chat_info.id
+                except Exception:
+                    pass
+
+    # If both scenarios failed to resolve a target user, throw an error tip
+    if not target_id:
+        await message.reply(
+            "💡 <b>How to use /unmute:</b>\n"
+            "1. Reply directly to a user's message with <code>/unmute</code>\n"
+            "2. Type <code>/unmute @username</code>",
+            parse_mode="HTML"
+        )
         return
 
-    target_id = int(args[1])
+    # --- Execute Unmute and Reset State ---
     full_perms = ChatPermissions(
         can_send_messages=True,
         can_send_media_messages=True,
@@ -278,30 +372,36 @@ async def cmd_unmute(message: Message, bot: Bot, pool, redis):
         can_send_other_messages=True,
         can_add_web_page_previews=True,
     )
+    
     try:
         await bot.restrict_chat_member(DAO_GROUP_ID, target_id, permissions=full_perms)
     except Exception as exc:
-        await message.answer(f"⚠️ Could not unmute: {exc}")
+        await message.reply(f"⚠️ <b>Telegram API Error:</b> Could not restore restrictions. ({exc})", parse_mode="HTML")
         return
 
-    # Clear verification lockout from Redis
+    # Clear all verification failure blocks from Upstash Redis
     await redis.delete(f"verify:locked:{target_id}")
     await redis.delete(f"verify:attempts:{target_id}")
 
+    # Synchronize their state in Supabase
     async with pool.acquire() as conn:
         await conn.execute(
             "UPDATE users SET is_muted = FALSE WHERE user_id = $1", target_id
         )
 
+    # Clean up the admin's command message
     try:
         await message.delete()
     except Exception:
         pass
 
+    # Send a warm public confirmation welcoming them back to the chat
     await bot.send_message(
-        target_id,
-        "✅ A moderator has manually approved your access. Welcome to the DAO!"
+        DAO_GROUP_ID,
+        f"✅ <b>Administration Override:</b> Access approved. Welcome to the DAO!",
+        parse_mode="HTML"
     )
+
 
 
 # ===========================================================================
