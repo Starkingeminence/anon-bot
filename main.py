@@ -1,6 +1,6 @@
 """
 Acki Nacki DAO Community Bot
-Phase 1: Foundational Infrastructure
+Phase 1-4 Core Infrastructure Framework
 
 Stack  : Python 3.11+ | aiogram 3.x | asyncpg | redis-py | aiohttp
 Hosting: Render Free Tier  → Webhook + $PORT binding + /health cron probe
@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import logging
 import os
+import asyncio
+from datetime import timezone
 from typing import Any
 
 import asyncpg
@@ -25,8 +27,6 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_applicati
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
 
 load_dotenv()
 
@@ -125,9 +125,11 @@ async def verify_schema(pool: asyncpg.Pool) -> None:
         "users",
         "penalties",
         "anon_logs",
-        "treasury_stats",
         "verification_attempts",
-        "admin_duty",
+        "referrals",
+        "point_ledger",
+        "spray_log",
+        "wallets"
     ]
     async with pool.acquire() as conn:
         rows = await conn.fetch(
@@ -144,7 +146,7 @@ async def verify_schema(pool: asyncpg.Pool) -> None:
     if missing:
         raise RuntimeError(
             f"Database schema is incomplete. Missing tables: {missing}. "
-            "Please run schema.sql in Supabase's SQL Editor before starting the bot."
+            "Please apply Phase 4 SQL schema definitions in Supabase before starting the bot."
         )
     logger.info("✅ Database schema verified — all %d tables present", len(required_tables))
 
@@ -197,27 +199,30 @@ async def scheduled_daily_reset(pool: asyncpg.Pool) -> None:
         logger.exception("❌ Daily points reset FAILED — investigate immediately")
 
 
-async def scheduled_monthly_payout(pool: asyncpg.Pool, bot: Bot) -> None:
+def build_scheduler(pool: asyncpg.Pool, redis: aioredis.Redis, bot: Bot) -> AsyncIOScheduler:
     """
-    Last second of each month — calculate 1/12th treasury payout.
-    PRD §3: Monthly Payout Logic.
+    Wire up all recurring background engines into a single unified clock instance.
+    Enforces distinct operational separations across jobs 1, 2, and 3.
+    """
+    from tasks.payout_engine import referral_bonus_batch, end_of_month_collation
 
-    Full payout logic (RPC call + NACKL distribution) is implemented in
-    Phase 4 (treasury module). This stub logs the trigger so the scheduler
-    wiring is testable from Phase 1.
-    """
-    logger.info("⏰ Monthly  triggered — deferring to treasury module (Phase 4)")
-    # TODO (Phase 4): import and call treasury.execute_monthly_payout(pool, bot)
-
-
-def build_scheduler(pool: asyncpg.Pool, bot: Bot) -> AsyncIOScheduler:
-    """
-    Wire up all recurring jobs. Returns a configured but not-yet-started
-    scheduler; it is started inside on_startup so the event loop is running.
-    """
     scheduler = AsyncIOScheduler(timezone="UTC")
 
-    # 00:00 UTC daily — reset points_daily
+    # JOB 1 (hourly) — referral_bonus_batch()
+    # Computes 10% referral bonus for points earned in the past 60 minutes.
+    # Reads from a `referrals` table, writes bonus increments to users.
+    scheduler.add_job(
+        referral_bonus_batch,
+        trigger="interval",
+        hours=1,
+        args=[pool, redis, bot],
+        id="referral_batch",
+        replace_existing=True,
+        misfire_grace_time=300,  # Grace room for free tier spin-ups
+    )
+
+    # JOB 2 (daily @ 00:00 UTC) — scheduled_daily_reset
+    # Resets points_daily for all active system users natively inside PostgreSQL.
     scheduler.add_job(
         scheduled_daily_reset,
         trigger=CronTrigger(hour=0, minute=0, second=0, timezone="UTC"),
@@ -227,16 +232,15 @@ def build_scheduler(pool: asyncpg.Pool, bot: Bot) -> AsyncIOScheduler:
         misfire_grace_time=60,  # Allow up to 60s late start before skipping
     )
 
-    # 23:59:58 UTC on the last day of each month — monthly payout
+    # JOB 3 (monthly @ 00:00 UTC on 1st) — end_of_month_collation()
+    # Full transactional payout sequence: Chat freeze, math checks, GraphQL payload dispatch, grand reset lifecycle.
     scheduler.add_job(
-        scheduled_monthly_payout,
-        trigger=CronTrigger(
-            day="last", hour=23, minute=59, second=58, timezone="UTC"
-        ),
-        args=[pool, bot],
+        end_of_month_collation,
+        trigger=CronTrigger(day=1, hour=0, minute=0, timezone=timezone.utc),
+        args=[pool, redis, bot],
         id="monthly_payout",
         replace_existing=True,
-        misfire_grace_time=120,
+        misfire_grace_time=600,
     )
 
     return scheduler
@@ -300,26 +304,22 @@ def build_dispatcher(redis_url: str) -> Dispatcher:
     storage = RedisStorage.from_url(redis_url)
     dp = Dispatcher(storage=storage)
 
-    # ── Phase 2: Active Routers ───────────────────────────────────────────────
+    # ── Phase 2-4: Active Routers ─────────────────────────────────────────────
     from routers.admin import router as admin_router
     from routers.economy import router as economy_router
     from routers.verification import router as verification_router
     from routers.treasury import router as treasury_router
-    from tasks.payout_engine import (
-    end_of_month_collation,
-    midnight_daily_reset,
-    referral_bonus_batch,
-    )
 
     # ORDER MATTERS: Admin must be registered FIRST so it catches commands 
     # before the economy router catches standard chat messages.
     dp.include_router(admin_router)
     dp.include_router(verification_router)
-    dp.include_router(treasury_router)      # ← ADD (Phase 4)
+    dp.include_router(treasury_router)      # ← Phase 4 User Read-Only Layer
     dp.include_router(economy_router)
 
-    logger.info("✅ Dispatcher built with RedisStorage FSM")
+    logger.info("✅ Dispatcher built with RedisStorage FSM & prioritizing routers")
     return dp
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # AIOHTTP LIFECYCLE HOOKS
@@ -333,7 +333,7 @@ async def on_startup(app: web.Application) -> None:
     2. Connect Redis
     3. Verify schema
     4. Inject shared resources into dispatcher workflow_data
-    5. Start APScheduler
+    5. Start APScheduler (Unified and compiled cleanly)
     6. Register Telegram webhook
     """
     bot: Bot = app["bot"]
@@ -370,10 +370,11 @@ async def on_startup(app: web.Application) -> None:
     )
 
     # ── 5. APScheduler ────────────────────────────────────────────────────────
-    scheduler = build_scheduler(db_pool, bot)
+    # Instantiates the shared, single structural scheduler clock mapping jobs 1, 2, and 3
+    scheduler = build_scheduler(db_pool, redis_client, bot)
     scheduler.start()
     app["scheduler"] = scheduler
-    logger.info("✅ APScheduler started — daily reset @ 00:00 UTC, payout @ month-end")
+    logger.info("✅ APScheduler started — Hourly bonus engine, 00:00 reset, and month-end payout active.")
 
     # ── 6. Telegram Webhook ───────────────────────────────────────────────────
     # drop_pending_updates=True: discard any updates queued during downtime
@@ -391,29 +392,6 @@ async def on_startup(app: web.Application) -> None:
         info.pending_update_count,
         info.last_error_message or "none",
     )
-    
-    pool = app["dp"].workflow_data["pool"]
-    redis = app["dp"].workflow_data["redis"]
-    bot = app["bot"]
-    
-    scheduler = AsyncIOScheduler()
-
-    # Trigger Job 1: Hourly Referral Batch computation loops
-    scheduler.add_job(
-        referral_bonus_batch,
-        "interval",
-        hours=1,
-        args=[pool, redis, bot]
-    )
-
-    # Trigger Job 3: Absolute end-of-month dynamic runway collation execution (Midnight on the 1st)
-    scheduler.add_job(
-        end_of_month_collation,
-        CronTrigger(day=1, hour=0, minute=0, timezone=timezone.utc),
-        args=[pool, redis, bot]
-    )
-
-    scheduler.start()
 
 
 async def on_shutdown(app: web.Application) -> None:
