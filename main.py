@@ -25,6 +25,8 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_applicati
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 load_dotenv()
 
@@ -302,12 +304,19 @@ def build_dispatcher(redis_url: str) -> Dispatcher:
     from routers.admin import router as admin_router
     from routers.economy import router as economy_router
     from routers.verification import router as verification_router
+    from routers.treasury import router as treasury_router
+    from tasks.payout_engine import (
+    end_of_month_collation,
+    midnight_daily_reset,
+    referral_bonus_batch,
+    )
 
     # ORDER MATTERS: Admin must be registered FIRST so it catches commands 
     # before the economy router catches standard chat messages.
     dp.include_router(admin_router)
-    dp.include_router(verification_router)  # ← insert here
-    dp.include_router(economy_router)       # spam caught before points awarded
+    dp.include_router(verification_router)
+    dp.include_router(treasury_router)      # ← ADD (Phase 4)
+    dp.include_router(economy_router)
 
     logger.info("✅ Dispatcher built with RedisStorage FSM")
     return dp
@@ -382,6 +391,29 @@ async def on_startup(app: web.Application) -> None:
         info.pending_update_count,
         info.last_error_message or "none",
     )
+    
+    pool = app["dp"].workflow_data["pool"]
+    redis = app["dp"].workflow_data["redis"]
+    bot = app["bot"]
+    
+    scheduler = AsyncIOScheduler()
+
+    # Trigger Job 1: Hourly Referral Batch computation loops
+    scheduler.add_job(
+        referral_bonus_batch,
+        "interval",
+        hours=1,
+        args=[pool, redis, bot]
+    )
+
+    # Trigger Job 3: Absolute end-of-month dynamic runway collation execution (Midnight on the 1st)
+    scheduler.add_job(
+        end_of_month_collation,
+        CronTrigger(day=1, hour=0, minute=0, timezone=timezone.utc),
+        args=[pool, redis, bot]
+    )
+
+    scheduler.start()
 
 
 async def on_shutdown(app: web.Application) -> None:
