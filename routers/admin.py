@@ -402,6 +402,122 @@ async def cmd_unmute(message: Message, bot: Bot, pool, redis):
         parse_mode="HTML"
     )
 
+# ---------------------------------------------------------------------------
+# /ban — Permanent removal (Public accountability, hidden identity)
+# ---------------------------------------------------------------------------
+@router.message(Command("ban"), F.chat.id == DAO_GROUP_ID, F.reply_to_message)
+async def cmd_ban(message: Message, bot: Bot, pool, redis):
+    admin_id = message.from_user.id
+    if not await _is_admin(admin_id, bot, DAO_GROUP_ID):
+        return
+
+    target_msg = message.reply_to_message
+    real_user_id = await _resolve_target(target_msg, pool)
+    if not real_user_id:
+        await message.answer("⚠️ Could not identify the message author.")
+        return
+
+    if await _is_admin(real_user_id, bot, DAO_GROUP_ID):
+        await message.answer("🚫 You cannot ban other admins.")
+        return
+
+    args = message.text.split(maxsplit=1)
+    reason = args[1] if len(args) > 1 else "No reason provided."
+
+    # 1. Execute the Ban
+    try:
+        await bot.ban_chat_member(DAO_GROUP_ID, real_user_id)
+    except Exception as exc:
+        log.warning("Could not ban %d: %s", real_user_id, exc)
+        await message.answer("⚠️ Failed to ban user. Check bot permissions.")
+        return
+
+    # 2. Log it in the database
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO penalties (user_id, admin_id, action, reason, timestamp)
+            VALUES ($1, $2, $3, $4, $5)
+            """,
+            real_user_id, admin_id, "ban", reason,
+            datetime.now(tz=timezone.utc),
+        )
+
+    # 3. Publicly announce the enforcement (WITHOUT revealing the ID)
+    try:
+        await message.reply(
+            f"🔨 <b>Action:</b> User Banned\n"
+            f"<b>Reason:</b> <i>{reason}</i>\n"
+            f"<i>The author of the targeted message has been permanently removed from the DAO.</i>",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# /unban — Manual admin override to lift a ban
+# ---------------------------------------------------------------------------
+@router.message(Command("unban"), F.chat.id == DAO_GROUP_ID)
+async def cmd_unban(message: Message, bot: Bot, pool, redis):
+    admin_id = message.from_user.id
+    if not await _is_admin(admin_id, bot, DAO_GROUP_ID):
+        return
+
+    target_id = None
+
+    # Option 1: Replying to an old message (works for ghost /anon messages too)
+    if message.reply_to_message:
+        target_id = await _resolve_target(message.reply_to_message, pool)
+    
+    # Option 2 & 3: Tagging a username or using an ID
+    else:
+        args = message.text.split()
+        if len(args) > 1:
+            identifier = args[1]
+            
+            # If they typed a username
+            if identifier.startswith("@"):
+                try:
+                    # Ask Telegram to look up the public username globally
+                    chat_info = await bot.get_chat(identifier)
+                    target_id = chat_info.id
+                except Exception:
+                    await message.answer(f"⚠️ Could not find a user with the username {identifier}.")
+                    return
+            
+            # If they used the fallback raw ID
+            elif identifier.isdigit():
+                target_id = int(identifier)
+
+    # If all options fail
+    if not target_id:
+        await message.answer(
+            "⚠️ <b>How to unban:</b>\n"
+            "1. Reply to one of their old messages with <code>/unban</code>\n"
+            "2. Type <code>/unban @their_username</code>\n"
+            "3. Type <code>/unban user_id</code> (Fallback)",
+            parse_mode="HTML"
+        )
+        return
+    
+    # 1. Lift the Telegram block
+    try:
+        await bot.unban_chat_member(DAO_GROUP_ID, target_id, only_if_banned=True)
+    except Exception as exc:
+        await message.answer(f"⚠️ Could not unban: {exc}")
+        return
+
+    # 2. Publicly announce the unban
+    try:
+        await message.reply(
+            f"✅ <b>Action:</b> User Unbanned\n"
+            f"<b>Target ID:</b> <code>{target_id}</code>\n"
+            f"<i>The user is now allowed to rejoin the Safe Zone.</i>",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
 
 
 # ===========================================================================
