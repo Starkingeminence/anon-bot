@@ -311,6 +311,7 @@ def build_dispatcher(redis_url: str) -> Dispatcher:
     from routers.verification import router as verification_router
     from routers.treasury import router as treasury_router
     from routers import language_mod
+    from routers.game_engine import router as game_router
 
     # ORDER MATTERS: Admin must be registered FIRST so it catches commands 
     # before the economy router catches standard chat messages.
@@ -319,6 +320,7 @@ def build_dispatcher(redis_url: str) -> Dispatcher:
     dp.include_router(treasury_router)      # ← Phase 4 User Read-Only Layer
     dp.include_router(economy_router)
     dp.include_router(language_mod.router)
+    dp.include_router(game_router)
 
     logger.info("✅ Dispatcher built with RedisStorage FSM & prioritizing routers")
     return dp
